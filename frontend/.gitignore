@@ -1,0 +1,23 @@
+# env files
+.env
+.env.local
+.env.development
+.env.production
+.env*.local
+
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+tsconfig.tsbuildinfo
+
+# build
+dist/
+build/
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*

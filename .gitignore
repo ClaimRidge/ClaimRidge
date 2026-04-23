@@ -1,0 +1,76 @@
+# =========================
+# Environment Variables
+# =========================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+# Next.js / Node.js Frontend
+# =========================
+node_modules/
+.next/
+out/
+build/
+dist/
+
+# npm / yarn / pnpm logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vercel / Deployment
+.vercel/
+
+# Next.js cache
+.turbo/
+
+# =========================
+# Python / FastAPI Backend
+# =========================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# WeasyPrint / System cache
+*.pdf
+*.log
+
+# Type checking / Linters
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# =========================
+# OS & Editor Files
+# =========================
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
