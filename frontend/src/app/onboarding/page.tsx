@@ -54,11 +54,7 @@ export default function OnboardingPage() {
         .maybeSingle();
 
       if (profile?.account_type) {
-        if (profile.account_type === "insurance") {
-          router.push("/dashboard/insurance");
-        } else {
-          router.push("/dashboard/provider");
-        }
+        router.push("/dashboard");
       }
     };
     checkUser();
@@ -108,36 +104,16 @@ export default function OnboardingPage() {
         };
       }
 
-      const { error: profileError } = await supabase
+      const { error } = await supabase
         .from("profiles")
         .upsert(profileData);
 
-      if (profileError) {
-        setError(profileError.message);
+      if (error) {
+        setError(error.message);
         return;
       }
 
-      // If insurance, also populate insurer_profiles
-      if (role === "insurance") {
-        const { error: insurerError } = await supabase
-          .from("insurer_profiles")
-          .upsert({
-            user_id: user.id,
-            company_name: insuranceDetails.companyNameEn,
-            updated_at: new Date().toISOString(),
-          });
-        
-        if (insurerError) {
-          setError(insurerError.message);
-          return;
-        }
-      }
-
-      if (role === "insurance") {
-        router.push("/dashboard/insurance");
-      } else {
-        router.push("/dashboard/provider");
-      }
+      router.push("/dashboard");
     } catch {
       setError("An unexpected error occurred. Please try again.");
     } finally {

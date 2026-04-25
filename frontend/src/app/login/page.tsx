@@ -34,35 +34,13 @@ export default function LoginPage() {
 
       // Check which profile the user has for role-based redirect
       if (data.user) {
-        // 1. Check user_metadata
-        const accountType = data.user.user_metadata?.account_type;
-        if (accountType === "insurance") {
-          router.push("/dashboard/insurance");
-        } else if (accountType === "provider") {
-          router.push("/dashboard/provider");
-        } else {
-          // 2. Check profiles table
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("account_type")
-            .eq("id", data.user.id)
-            .maybeSingle();
-          
-          if (profile?.account_type === "insurance") {
-            router.push("/dashboard/insurance");
-          } else if (profile?.account_type === "provider") {
-            router.push("/dashboard/provider");
-          } else {
-            // 3. Fallback to insurer_profiles check
-            const { data: insurerProfile } = await supabase
-              .from("insurer_profiles")
-              .select("id")
-              .eq("user_id", data.user.id)
-              .maybeSingle();
+        const { data: insurerProfile } = await supabase
+          .from("insurer_profiles")
+          .select("id")
+          .eq("user_id", data.user.id)
+          .maybeSingle();
 
-            router.push(insurerProfile ? "/dashboard/insurance" : "/dashboard/provider");
-          }
-        }
+        router.push(insurerProfile ? "/insurer/dashboard" : "/dashboard");
       } else {
         router.push("/dashboard");
       }

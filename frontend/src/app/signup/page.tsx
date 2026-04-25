@@ -112,43 +112,8 @@ export default function SignupPage() {
         return;
       }
 
-      // Create profile entries
-      if (data.user) {
-        const configJson = role === "provider" 
-          ? { organization_name_ar: providerDetails.legalNameAr, address: providerDetails.address }
-          : { 
-              organization_name_ar: insuranceDetails.companyNameAr, 
-              policy_file_base64: insuranceDetails.policyFileBase64, 
-              policy_file_name: insuranceDetails.policyFileName 
-            };
-
-        const profileData: any = {
-          id: data.user.id,
-          account_type: role,
-          organization_name: role === "provider" ? providerDetails.legalNameEn : insuranceDetails.companyNameEn,
-          license_number: role === "provider" ? providerDetails.licenseNumber : insuranceDetails.licenseNumber,
-          contact_email: role === "provider" ? providerDetails.primaryEmail : email,
-          config_json: configJson
-        };
-
-        await supabase.from("profiles").upsert(profileData);
-
-        if (role === "insurance") {
-          await supabase.from("insurer_profiles").upsert({
-            user_id: data.user.id,
-            company_name: insuranceDetails.companyNameEn,
-            updated_at: new Date().toISOString()
-          });
-        }
-      }
-
       // In dev mode with email confirmation disabled, we can redirect immediately
-      // Redirect based on role
-      if (role === "insurance") {
-        router.push("/dashboard/insurance");
-      } else {
-        router.push("/dashboard/provider");
-      }
+      router.push("/dashboard");
       router.refresh();
     } catch {
       setError("An unexpected error occurred. Please try again.");

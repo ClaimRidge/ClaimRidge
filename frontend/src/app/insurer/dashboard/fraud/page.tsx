@@ -1,4 +1,4 @@
-import UnderConstruction from "@/components/dashboard/insurance/UnderConstruction";
+import UnderConstruction from "@/components/insurer/UnderConstruction";
 
 export default function FraudPage() {
   return (

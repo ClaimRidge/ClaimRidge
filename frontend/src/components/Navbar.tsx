@@ -32,7 +32,7 @@ export default function Navbar() {
   }, [supabase]);
 
   // Show Navbar ONLY on the home page and dashboard page
-  if (pathname !== "/dashboard" && pathname !== "/dashboard/provider" && pathname !== "/") {
+  if (pathname !== "/dashboard" && pathname !== "/") {
     return null;
   }
 
@@ -56,7 +56,7 @@ export default function Navbar() {
             {!loading && user ? (
               <>
                 <Link
-                  href="/dashboard/provider"
+                  href="/dashboard"
                   className="flex items-center gap-1.5 text-sm text-[#374151] hover:text-[#16a34a] transition-colors"
                 >
                   <LayoutDashboard className="h-4 w-4" />
@@ -122,7 +122,7 @@ export default function Navbar() {
           {!loading && user ? (
             <>
               <Link
-                href="/dashboard/provider"
+                href="/dashboard"
                 className="flex items-center gap-2 py-2 text-[#374151] hover:text-[#16a34a]"
                 onClick={() => setMobileOpen(false)}
               >

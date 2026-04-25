@@ -6,8 +6,8 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { InsurerClaim, InsurerClaimStatus, RiskLevel } from "@/types/insurer";
 import { getRiskLevel } from "@/types/insurer";
-import ClaimStatusPill from "@/components/dashboard/insurance/ClaimStatusPill";
-import RiskScoreBadge from "@/components/dashboard/insurance/RiskScoreBadge";
+import ClaimStatusPill from "@/components/insurer/ClaimStatusPill";
+import RiskScoreBadge from "@/components/insurer/RiskScoreBadge";
 import { formatJod, formatRelativeTime, maskNationalId } from "@/lib/utils/format";
 import {
   FileSearch,
