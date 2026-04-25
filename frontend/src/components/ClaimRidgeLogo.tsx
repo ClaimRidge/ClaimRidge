@@ -12,56 +12,45 @@ export default function ClaimRidgeLogo({
   className = "",
   variant = "light",
 }: ClaimRidgeLogoProps) {
+  // The full logo is 1049x240 (ratio ~4.37)
+  const width = showText ? size * (1049 / 240) : size * 0.75;
   const height = size;
-  const width = size * (44 / 50);
-  const wordColor = variant === "dark" ? "#ffffff" : "#0a0a0a";
 
   return (
-    <div className={`flex items-center gap-2.5 ${className}`}>
-      {/* Shield icon */}
-      <svg
-        width={width}
-        height={height}
-        viewBox="0 0 44 50"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-      >
-        <path
-          d="M8 2H36L42 10V30C42 39 33 46 22 49C11 46 2 39 2 30V10L8 2Z"
-          fill="#16a34a"
-        />
-        <path
-          d="M11 6H33L38 12V29C38 37 31 43 22 45.5C13 43 6 37 6 29V12L11 6Z"
-          fill="none"
-          stroke="#14532d"
-          strokeWidth="1.2"
-          strokeLinejoin="round"
-          opacity="0.5"
-        />
-        <path
-          d="M13 25L19 32L31 17"
-          stroke="#ffffff"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-
-      {/* Wordmark */}
-      {showText && (
-        <span
-          className="font-serif-display"
-          style={{
-            color: wordColor,
-            fontSize: size * 0.52,
-            fontWeight: 700,
-            letterSpacing: "-0.02em",
-            lineHeight: 1,
+    <div className={`flex items-center ${className}`}>
+      {showText ? (
+        <img
+          src="/full-claim-logo.svg"
+          alt="ClaimRidge Logo"
+          width={width}
+          height={height}
+          style={{ 
+            height: height, 
+            width: 'auto',
+            // If the user requested a dark variant but the file has black text, 
+            // we can apply a brightness filter to make it white-ish for dark backgrounds.
+            filter: variant === "dark" ? "brightness(0) invert(1)" : "none"
           }}
-        >
-          Claim<span style={{ color: "#16a34a" }}>Ridge</span>
-        </span>
+        />
+      ) : (
+        <div style={{ 
+          width: size * 0.75, 
+          height: size, 
+          overflow: 'hidden',
+          display: 'flex',
+          alignItems: 'center'
+        }}>
+          <img
+            src="/full-claim-logo.svg"
+            alt="ClaimRidge Icon"
+            style={{ 
+              height: size, 
+              width: 'auto', 
+              maxWidth: 'none',
+              filter: variant === "dark" ? "brightness(0) invert(1)" : "none"
+            }}
+          />
+        </div>
       )}
     </div>
   );

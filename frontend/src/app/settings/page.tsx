@@ -3,9 +3,10 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { User } from "@supabase/supabase-js";
+import Button from "@/components/ui/Button";
 import { UserCircle, Bell, Shield, Building2, Save, Loader2, CheckCircle2 } from "lucide-react";
 
-export default function InsurerSettingsPage() {
+export default function ClinicSettingsPage() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -13,7 +14,7 @@ export default function InsurerSettingsPage() {
   const [success, setSuccess] = useState(false);
 
   const [formData, setFormData] = useState({
-    companyName: "",
+    clinicName: "",
   });
 
   const supabase = createClient();
@@ -24,7 +25,7 @@ export default function InsurerSettingsPage() {
       if (user) {
         setUser(user);
         const { data: prof } = await supabase
-          .from("insurer_profiles")
+          .from("clinic_profiles")
           .select("*")
           .eq("user_id", user.id)
           .single();
@@ -32,7 +33,7 @@ export default function InsurerSettingsPage() {
         if (prof) {
           setProfile(prof);
           setFormData({
-            companyName: prof.company_name || "",
+            clinicName: prof.clinic_name || "",
           });
         }
       }
@@ -47,9 +48,9 @@ export default function InsurerSettingsPage() {
     setSuccess(false);
 
     const { error } = await supabase
-      .from("insurer_profiles")
+      .from("clinic_profiles")
       .update({
-        company_name: formData.companyName,
+        clinic_name: formData.clinicName,
         updated_at: new Date().toISOString(),
       })
       .eq("user_id", user.id);
@@ -65,8 +66,8 @@ export default function InsurerSettingsPage() {
 
   if (loading) {
     return (
-      <div className="px-4 py-12 flex justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-[#0A1628]" />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 flex justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-[#16a34a]" />
       </div>
     );
   }
@@ -74,39 +75,39 @@ export default function InsurerSettingsPage() {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 w-full">
       <div className="mb-8">
-        <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0a0a0a]">Organization Settings</h1>
-        <p className="text-[#9ca3af] text-sm mt-1">Manage your organization's profile and preferences</p>
+        <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0a0a0a]">Settings</h1>
+        <p className="text-[#9ca3af] text-sm mt-1">Manage your clinic profile and preferences</p>
       </div>
 
       <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm overflow-hidden transition-all duration-300">
         <div className="px-6 py-5 border-b border-[#f3f4f6]">
-          <h2 className="font-display font-bold text-lg text-[#0a0a0a]">Organization Information</h2>
-          <p className="text-sm text-[#6b7280]">Update your organization's core details.</p>
+          <h2 className="font-display font-bold text-lg text-[#0a0a0a]">Clinic Information</h2>
+          <p className="text-sm text-[#6b7280]">Update your clinic's basic details.</p>
         </div>
         <div className="p-6 space-y-6">
           <div>
-            <label className="block text-sm font-medium text-[#374151] mb-1">Admin Email</label>
+            <label className="block text-sm font-medium text-[#374151] mb-1">Email Address</label>
             <input
               type="email"
               disabled
               value={user?.email || ""}
               className="w-full px-4 py-2 bg-[#f9fafb] border border-[#e5e7eb] rounded-lg text-[#6b7280] sm:text-sm cursor-not-allowed"
             />
-            <p className="mt-1.5 text-xs text-[#9ca3af]">Your admin email address cannot be changed from here.</p>
+            <p className="mt-1.5 text-xs text-[#9ca3af]">Your email address cannot be changed from here.</p>
           </div>
           
           <div>
-            <label className="block text-sm font-medium text-[#374151] mb-1">Company Name</label>
+            <label className="block text-sm font-medium text-[#374151] mb-1">Clinic Name</label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <Building2 className="h-4 w-4 text-[#9ca3af]" />
               </div>
               <input
                 type="text"
-                value={formData.companyName}
-                onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
-                className="w-full pl-10 pr-4 py-2 bg-white border border-[#d1d5db] rounded-lg text-[#0a0a0a] focus:ring-2 focus:ring-[#0A1628]/20 focus:border-[#0A1628] outline-none transition-shadow sm:text-sm"
-                placeholder="e.g. Acme Insurance"
+                value={formData.clinicName}
+                onChange={(e) => setFormData({ ...formData, clinicName: e.target.value })}
+                className="w-full pl-10 pr-4 py-2 bg-white border border-[#d1d5db] rounded-lg text-[#0a0a0a] focus:ring-2 focus:ring-[#16a34a]/20 focus:border-[#16a34a] outline-none transition-shadow sm:text-sm"
+                placeholder="e.g. City Hospital"
               />
             </div>
           </div>
@@ -118,14 +119,10 @@ export default function InsurerSettingsPage() {
                 Saved successfully
               </span>
             )}
-            <button 
-              onClick={handleSave} 
-              disabled={saving} 
-              className="inline-flex items-center justify-center bg-[#0A1628] text-white font-medium text-sm px-4 py-2 rounded-lg hover:bg-[#112440] transition-colors gap-2 disabled:opacity-70"
-            >
+            <Button onClick={handleSave} disabled={saving} className="gap-2">
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               {saving ? "Saving..." : "Save Changes"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

@@ -77,9 +77,6 @@ export default function DemoVideoModal({ children }: DemoVideoModalProps) {
                   <p className="text-sm font-medium text-[#6b7280]">
                     Demo video coming soon
                   </p>
-                  <p className="text-xs text-[#9ca3af] mt-1">
-                    Replace VIDEO_URL in DemoVideoModal.tsx
-                  </p>
                 </div>
               )}
             </div>

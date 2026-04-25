@@ -26,13 +26,13 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: "ClaimRidge — AI Insurance Compliance Layer",
+  title: "ClaimRidge • AI Insurance Compliance Layer",
   description:
-    "AI-powered compliance layer that ensures medical claims meet each payer's exact requirements before submission — reducing denials for providers and review costs for insurers.",
+    "AI-powered compliance layer that ensures medical claims meet each payer's exact requirements before submission, reducing denials for providers and review costs for insurers.",
   icons: {
-    icon: "/claimridge-icon.svg",
-    shortcut: "/claimridge-icon.svg",
-    apple: "/claimridge-icon.svg",
+    icon: "/claim-logo.svg",
+    shortcut: "/claim-logo.svg",
+    apple: "/claim-logo.svg",
   },
 };
 

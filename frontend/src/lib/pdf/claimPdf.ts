@@ -27,30 +27,19 @@ function severityColor(severity: string): [number, number, number] {
  * Uses a dark background version of the SVG so text is visible on white PDF.
  */
 function renderLogoToDataUrl(): Promise<string> {
-  // Inline the SVG with dark text (navy) so it's visible on the white PDF background
-  const svgMarkup = `<svg width="220" height="50" viewBox="0 0 220 50" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M8 2H36L42 10V30C42 39 33 46 22 49C11 46 2 39 2 30V10L8 2Z" fill="#18d668"/>
-  <path d="M11 6H33L38 12V29C38 37 31 43 22 45.5C13 43 6 37 6 29V12L11 6Z" fill="none" stroke="#0a6e33" stroke-width="1.2" stroke-linejoin="round"/>
-  <path d="M13 25L19 32L31 17" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="56" y="35" font-family="Inter, Syne, sans-serif" font-weight="700" font-size="26" letter-spacing="-0.8" fill="#0A1628">Claim</text>
-  <text x="122" y="35" font-family="Inter, Syne, sans-serif" font-weight="700" font-size="26" letter-spacing="-0.8" fill="#18d668">Ridge</text>
-</svg>`;
-
   return new Promise((resolve) => {
-    const scale = 3; // render at 3x for crisp output
+    const scale = 2;
     const canvas = document.createElement("canvas");
-    canvas.width = 220 * scale;
-    canvas.height = 50 * scale;
+    // Logo dimension is 1049x240
+    canvas.width = 1049 * scale;
+    canvas.height = 240 * scale;
     const ctx = canvas.getContext("2d")!;
     const img = new Image();
-    const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
     img.onload = () => {
-      ctx.drawImage(img, 0, 0, 220 * scale, 50 * scale);
-      URL.revokeObjectURL(url);
+      ctx.drawImage(img, 0, 0, 1049 * scale, 240 * scale);
       resolve(canvas.toDataURL("image/png"));
     };
-    img.src = url;
+    img.src = "/full-claim-logo.svg";
   });
 }
 
@@ -63,9 +52,9 @@ export async function generateClaimPdf(claim: Claim): Promise<void> {
 
   // -------- Header --------
   const logoDataUrl = await renderLogoToDataUrl();
-  // Logo SVG is 220x50 — render at ~50mm wide x ~11.4mm tall
-  const logoW = 50;
-  const logoH = logoW * (50 / 220);
+  // Logo dimensions from full-claim-logo.svg are 1049x240
+  const logoW = 55;
+  const logoH = logoW * (240 / 1049);
   doc.addImage(logoDataUrl, "PNG", marginX, y - 2, logoW, logoH);
 
   doc.setFont("helvetica", "normal");

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { User } from "@supabase/supabase-js";
-import { Menu, X, LogOut, LayoutDashboard, FilePlus, Stethoscope } from "lucide-react";
+import { Menu, X, LogOut, LayoutDashboard, FilePlus, Stethoscope, Settings } from "lucide-react";
 import ClaimRidgeLogo from "@/components/ClaimRidgeLogo";
 
 export default function Navbar() {
@@ -62,6 +62,13 @@ export default function Navbar() {
                 >
                   <FilePlus className="h-4 w-4" />
                   New Claim
+                </Link>
+                <Link
+                  href="/settings"
+                  className="flex items-center gap-1.5 text-sm text-[#374151] hover:text-[#16a34a] transition-colors"
+                >
+                  <Settings className="h-4 w-4" />
+                  Settings
                 </Link>
                 <div className="flex items-center gap-3 ml-2 pl-4 border-l border-[#e5e7eb]">
                   <span className="text-sm text-[#6b7280]">{user.email}</span>
@@ -127,6 +134,14 @@ export default function Navbar() {
               >
                 <FilePlus className="h-4 w-4" />
                 New Claim
+              </Link>
+              <Link
+                href="/settings"
+                className="flex items-center gap-2 py-2 text-[#374151] hover:text-[#16a34a]"
+                onClick={() => setMobileOpen(false)}
+              >
+                <Settings className="h-4 w-4" />
+                Settings
               </Link>
               <button
                 onClick={handleSignOut}

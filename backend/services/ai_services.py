@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from core.config import Config
@@ -134,12 +135,20 @@ Score thresholds for status:
 - The corrected_claim must have the same field structure as the input."""
 
 def get_llm(model_name: str = Config.LLM_MODEL):
-    """Now accepts a model_name to allow switching between standard LLM and OCR"""
-    logger.debug(f"Initializing LLM with model: {model_name}")
-    return ChatOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=Config.OPENROUTER_API_KEY,
-        model=model_name,
+    """Returns Groq for main LLM tasks, and OpenRouter for OCR/Vision tasks."""
+    if model_name == Config.OCR_MODEL:
+        logger.debug(f"Initializing OpenRouter (OCR) LLM with model: {model_name}")
+        return ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=Config.OPENROUTER_API_KEY,
+            model=model_name,
+            temperature=0.3,
+        )
+    
+    logger.debug(f"Initializing Groq LLM with model: {model_name}")
+    return ChatGroq(
+        api_key=Config.GROQ_API_KEY,
+        model_name=model_name,
         temperature=0.3,
     )
 

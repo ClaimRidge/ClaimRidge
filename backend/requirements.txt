@@ -6,4 +6,6 @@ PyPDF2
 python-dotenv
 langchain
 langchain-openai
+langchain-groq
 playwright # after installation execute in cmd: playwright install chromium
+groq

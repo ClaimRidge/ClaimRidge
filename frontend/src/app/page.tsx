@@ -27,13 +27,6 @@ export default function HomePage() {
           <div className="grid md:grid-cols-[1.05fr_1fr] gap-8 md:gap-12 lg:gap-16 items-center">
             {/* Copy */}
             <div>
-              <div className="inline-flex items-center gap-2.5 bg-white border border-[#e5e7eb] rounded-full pl-3 pr-4 py-1.5 mb-8 shadow-sm">
-                <span className="pulse-dot" />
-                <span className="text-xs tracking-wide text-[#6b7280] font-medium">
-                  AI-Powered Insurance Compliance
-                </span>
-              </div>
-
               <h1
                 className="font-serif-display text-[#0a0a0a] mb-6"
                 style={{
@@ -56,7 +49,7 @@ export default function HomePage() {
                 }}
               >
                 ClaimRidge is the AI-powered compliance layer that
-                sits between hospitals and insurance companies —
+                sits between hospitals and insurance companies,
                 validating every claim against payer-specific rules
                 before submission. The result: fewer denials for
                 providers and less manual review for insurers.
@@ -98,7 +91,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Insurance logos marquee */}
+        {/* Insurance logos marquee 
         <div className="relative pb-12 md:pb-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <p className="text-center text-[10px] tracking-[0.2em] uppercase text-[#9ca3af] mb-5">
@@ -106,16 +99,15 @@ export default function HomePage() {
             </p>
           </div>
           <LogoMarquee />
-        </div>
+        </div>*/}
       </section>
 
-      {/* ==================== SOCIAL PROOF ==================== */}
+      {/* ==================== SOCIAL PROOF ==================== 
       <section className="py-10 md:py-12 bg-[#f9fafb] border-t border-[#f3f4f6]">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <p className="text-sm text-[#6b7280] mb-6">
             Trusted by providers and insurers across Jordan and the GCC
           </p>
-          {/* // TODO: Replace with real clinic logos when available */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-6">
             {[1, 2, 3].map((n) => (
               <div
@@ -128,7 +120,7 @@ export default function HomePage() {
             ))}
           </div>
         </div>
-      </section>
+      </section>*/}
 
       {/* ==================== HOW IT WORKS ==================== */}
       <section className="py-20 md:py-24 border-t border-[#f3f4f6]">
@@ -142,15 +134,15 @@ export default function HomePage() {
               Compliance built into the workflow.
             </h2>
             <p className="text-[#6b7280] mt-4 text-base md:text-lg">
-              ClaimRidge sits between your billing team and the payer — catching issues before they become denials.
+              ClaimRidge sits between your billing team and the payer, catching issues before they become denials.
             </p>
           </div>
 
           <div className="grid md:grid-cols-3 gap-5">
             {[
-              { icon: FileCheck, step: "01", title: "Submit", description: "Provider uploads or enters claim details — patient, diagnosis, procedure codes, and payer information." },
-              { icon: Brain, step: "02", title: "Validate", description: "AI checks every field against the specific payer's requirements — coding accuracy, medical necessity, and compliance rules." },
-              { icon: BarChart3, step: "03", title: "Clear to Send", description: "Compliant claims go through. Flagged claims get actionable fixes — so nothing hits the payer until it's right." },
+              { icon: FileCheck, step: "01", title: "Submit", description: "Provider uploads or enters claim details (patient, diagnosis, procedure codes, and payer information)." },
+              { icon: Brain, step: "02", title: "Validate", description: "AI checks every field against the specific payer's requirements (coding accuracy, medical necessity, and compliance rules)." },
+              { icon: BarChart3, step: "03", title: "Clear to Send", description: "Compliant claims go through. Flagged claims get actionable fixes (so nothing hits the payer until it's right)." },
             ].map((f, i) => (
               <div key={i} className="card-light p-6">
                 <div className="flex items-center gap-3 mb-4">
@@ -174,7 +166,7 @@ export default function HomePage() {
             className="font-serif-display text-[#374151] leading-relaxed"
             style={{ fontSize: "clamp(18px, 2.6vw, 24px)", fontWeight: 500, letterSpacing: "-0.01em" }}
           >
-            The compliance layer built for MENA healthcare — trained on payer rules across Jordan, UAE, Saudi Arabia, and the GCC.
+            The compliance layer built for MENA healthcare, trained on payer rules across Jordan, UAE, Saudi Arabia, and the GCC.
           </p>
         </div>
       </section>
@@ -189,7 +181,7 @@ export default function HomePage() {
             Stop losing revenue to preventable denials.
           </h2>
           <p className="text-[#6b7280] text-base md:text-lg mb-9 max-w-lg mx-auto">
-            Whether you&apos;re a hospital reducing rejections or an insurer cutting manual review — ClaimRidge makes every claim compliant from day one.
+            Whether you&apos;re a hospital reducing rejections or an insurer cutting manual review, ClaimRidge makes every claim compliant from day one.
           </p>
           <Link
             href="/signup"
