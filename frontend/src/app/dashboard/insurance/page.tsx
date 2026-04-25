@@ -18,6 +18,7 @@ import {
   ShieldAlert
 } from "lucide-react";
 import { formatJod, formatRelativeTime } from "@/lib/utils/format";
+import { InsurerClaimStatus } from "@/types/insurer";
 
 // --- Types ---
 interface InsurerClaim {
@@ -107,13 +108,45 @@ export default function InsurerDashboardPage() {
   const supabase = createClient();
 
   const fetchClaims = useCallback(async () => {
-    // In a real app, we would filter by the current insurer's ID
-    const { data } = await supabase
-      .from("insurer_claims")
-      .select("*")
-      .order("submitted_at", { ascending: false });
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
 
-    if (data) setClaims(data as InsurerClaim[]);
+    // Fetch from the real 'claims' table for this specific insurer
+    const { data } = await supabase
+      .from("claims")
+      .select("*")
+      .eq("payer_id", session.user.id)
+      .order("created_at", { ascending: false });
+
+    if (data) {
+      const mappedClaims: InsurerClaim[] = data.map((c: any) => ({
+        id: c.id,
+        claim_number: c.claim_number,
+        clinic_id: c.clinic_id || null,
+        clinic_name: c.provider_name || 'Unknown Clinic',
+        insurer_id: c.payer_id,
+        patient_name: c.patient_name,
+        patient_national_id: c.patient_id,
+        patient_dob: null,
+        patient_gender: null,
+        diagnosis_codes: c.diagnosis_codes || [],
+        diagnosis_description: null,
+        procedure_codes: c.procedure_codes || [],
+        procedure_description: c.notes || '',
+        service_date: c.date_of_service,
+        amount_jod: Number(c.total_billed),
+        status: (["submitted", "intake_complete"].includes(c.status) ? "pending" : c.status) as InsurerClaimStatus,
+        submitted_at: c.created_at,
+        decided_at: c.status === 'approved' || c.status === 'rejected' ? c.updated_at : null,
+        decided_by: null,
+        decision_reason: null,
+        ai_risk_score: c.ai_risk_score,
+        ai_recommendation: null,
+        created_at: c.created_at,
+        updated_at: c.updated_at || c.created_at,
+      }));
+      setClaims(mappedClaims);
+    }
     setLoading(false);
   }, [supabase]);
 
@@ -129,13 +162,12 @@ export default function InsurerDashboardPage() {
     
     const receivedToday = claims.filter(c => c.created_at.split("T")[0] === todayStr).length;
     const pendingReview = claims.filter(c => c.status === "pending" || c.status === "under_review").length;
-    const autoApprovedToday = claims.filter(c => c.status === "approved" && c.decided_at?.split("T")[0] === todayStr).length;
     const totalExposure = claims.filter(c => c.status === "pending" || c.status === "under_review").reduce((s, c) => s + Number(c.amount_jod), 0);
     
     const reviewed = claims.filter(c => c.decided_at && c.submitted_at);
     const avgProcessingHrs = reviewed.length > 0 ? Math.round(reviewed.reduce((s, c) => s + hoursAgo(c.submitted_at, c.decided_at!), 0) / reviewed.length) : 0;
     
-    return { receivedToday, pendingReview, autoApprovedToday, totalExposure, avgProcessingHrs };
+    return { receivedToday, pendingReview, totalExposure, avgProcessingHrs };
   }, [claims]);
 
   const actionClaims = useMemo(() => 
@@ -181,11 +213,6 @@ export default function InsurerDashboardPage() {
       {/* Welcome Header */}
       <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-[#f0faf4] text-[#16a34a] border border-[#dcfce7] uppercase tracking-wider">
-              System Active
-            </span>
-          </div>
           <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0a0a0a] tracking-tight">
             Payer Command <span className="text-[#16a34a]">Center</span>
           </h1>
@@ -193,24 +220,13 @@ export default function InsurerDashboardPage() {
             Monitor incoming medical claims, adjudicate risk profiles, and manage your network efficiency.
           </p>
         </div>
-        <div className="flex items-center gap-4 bg-white border border-[#e5e7eb] rounded-2xl p-4 shadow-sm">
-          <div className="w-10 h-10 rounded-full bg-[#f9fafb] border border-[#e5e7eb] flex items-center justify-center text-[#6b7280]">
-            <Clock className="h-5 w-5" />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest leading-none mb-1">Last Sync</p>
-            <p className="text-sm font-bold text-[#374151] leading-none">Just now</p>
-          </div>
-        </div>
       </div>
 
       {/* KPI Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
         <KpiCard label="Received Today" value={stats.receivedToday} icon={Inbox} color="blue" />
         <KpiCard label="Pending Review" value={stats.pendingReview} icon={Timer} color="amber" />
-        <KpiCard label="Auto-Approved" value={stats.autoApprovedToday} icon={CheckCircle} color="green" />
         <KpiCard label="Active Exposure" value={`${stats.totalExposure.toLocaleString()} JOD`} icon={ShieldAlert} color="red" />
-        <KpiCard label="Avg Response" value={`${stats.avgProcessingHrs}h`} icon={Clock} color="navy" />
       </div>
 
       {/* Main Grid */}

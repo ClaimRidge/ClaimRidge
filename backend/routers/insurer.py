@@ -1,152 +1,44 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
 from core.security import get_current_user
 from core.database import supabase
+from pydantic import BaseModel
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# --- Pydantic Models ---
+router = APIRouter(prefix="/api/insurer", tags=["insurer"])
+
 class ReviewClaimRequest(BaseModel):
     claim_id: str
     action: str
     reason: Optional[str] = None
 
-class AutoAdjudicateRequest(BaseModel):
-    claimId: str
+@router.get("/dashboard/claims")
+async def get_insurer_claims(current_user = Depends(get_current_user)):
+    """Fetches all claims routed to the currently logged-in insurance company."""
+    
+    # 1. Verify this user is actually an insurance company
+    profile_res = supabase.table("profiles").select("id, account_type").eq("id", current_user.id).execute()
+    
+    if not profile_res.data or profile_res.data[0].get("account_type") != "insurance":
+        logger.warning(f"User {current_user.id} attempted to access insurer dashboard but is not an insurer.")
+        raise HTTPException(status_code=403, detail="Not authorized as an insurer")
+    
+    insurer_id = profile_res.data[0]["id"]
 
-# --- Router ---
-router = APIRouter(prefix="/api/insurer", tags=["insurer"])
+    # 2. Fetch all claims where payer_id matches this insurer
+    # We order by created_at descending so the newest claims appear first
+    try:
+        claims_res = supabase.table("claims").select("*").eq("payer_id", insurer_id).order("created_at", desc=True).execute()
+        return claims_res.data
+    except Exception as e:
+        logger.error(f"Failed to fetch claims for insurer {insurer_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch dashboard claims")
 
+# --- We will rebuild the Adjudication logic in Phase 3/Module 6! ---
 @router.post("/review-claim")
 async def review_claim(payload: ReviewClaimRequest, current_user = Depends(get_current_user)):
-    logger.info(f"Review claim request from insurer {current_user.id}, claim: {payload.claim_id}, action: {payload.action}")
-    
-    profile_res = supabase.table("insurer_profiles").select("id").eq("user_id", current_user.id).execute()
-    if not profile_res.data:
-        logger.warning(f"User {current_user.id} not authorized as insurer")
-        raise HTTPException(status_code=403, detail="Not authorized as insurer")
-    
-    if payload.action not in ["approved", "rejected", "needs_info"]:
-        logger.warning(f"Invalid action '{payload.action}' attempted for claim {payload.claim_id}")
-        raise HTTPException(status_code=400, detail="Invalid action")
-        
-    if payload.action == "rejected" and not (payload.reason and payload.reason.strip()):
-        logger.warning(f"Rejection without reason attempted for claim {payload.claim_id}")
-        raise HTTPException(status_code=400, detail="Rejection reason is required")
-
-    update_data = {
-        "status": payload.action,
-        "decided_by": current_user.id,
-        "decided_at": datetime.now(timezone.utc).isoformat(),
-        "decision_reason": payload.reason or None,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    logger.debug(f"Updating claim {payload.claim_id} with decision: {payload.action}")
-    update_res = supabase.table("insurer_claims").update(update_data).eq("id", payload.claim_id).execute()
-    if not update_res.data:
-        logger.error(f"Failed to update claim {payload.claim_id}")
-        raise HTTPException(status_code=500, detail="Failed to update claim")
-    
-    logger.info(f"Claim {payload.claim_id} updated with decision: {payload.action}")
-    return {"claim": update_res.data[0]}
-
-
-async def run_auto_adjudicate(claim_id: str, user_id: str):
-    logger.debug(f"Starting auto-adjudication for claim {claim_id} by insurer {user_id}")
-    
-    claim_res = supabase.table("insurer_claims").select("*").eq("id", claim_id).execute()
-    if not claim_res.data:
-        logger.warning(f"Claim {claim_id} not found for auto-adjudication")
-        return None
-    claim = claim_res.data[0]
-
-    logger.debug(f"Loading adjudication rules for insurer {user_id}")
-    rules_res = supabase.table("adjudication_rules").select("*").eq("insurer_id", user_id).eq("is_active", True).execute()
-    rules = rules_res.data or []
-    logger.debug(f"Found {len(rules)} active adjudication rules")
-
-    triggered_rules = []
-    final_action = "auto_approve"
-    denial_code = ""
-    denial_reason = ""
-
-    procedure_codes = claim.get("procedure_codes") or []
-    diagnosis_codes = claim.get("diagnosis_codes") or []
-    amount_jod = float(claim.get("amount_jod") or 0)
-
-    for rule in rules:
-        triggered = False
-        params = rule.get("rule_params", {})
-        r_type = rule.get("rule_type")
-
-        if r_type == "cpt_not_covered" and params.get("cpt") in procedure_codes:
-            triggered = True
-        elif r_type == "dx_not_covered" and params.get("icd10") in diagnosis_codes:
-            triggered = True
-        elif r_type == "cpt_requires_modifier" and params.get("cpt") in procedure_codes:
-            triggered = True
-        elif r_type == "amount_threshold" and amount_jod > float(params.get("threshold_jod", 0)):
-            triggered = True
-        elif r_type == "requires_preauth":
-            cpt_list = params.get("cpt_list", [])
-            if any(c in cpt_list for c in procedure_codes):
-                triggered = True
-        elif r_type == "duplicate_claim":
-            dup_res = supabase.table("insurer_claims").select("id", count="exact")\
-                .eq("patient_name", claim.get("patient_name"))\
-                .eq("service_date", claim.get("service_date"))\
-                .neq("id", claim.get("id")).execute()
-            if dup_res.count and dup_res.count > 0:
-                triggered = True
-
-        if triggered:
-            logger.debug(f"Rule '{rule.get('rule_name')}' triggered for claim {claim_id}")
-            triggered_rules.append(rule["rule_name"])
-            
-            if rule["action"] == "auto_deny":
-                final_action = "auto_deny"
-                denial_code = rule.get("denial_code", "")
-                denial_reason = rule.get("denial_reason", "")
-                logger.info(f"Claim {claim_id} will be auto-denied due to rule '{rule.get('rule_name')}'")
-            elif rule["action"] == "require_auth" and final_action != "auto_deny":
-                final_action = "require_auth"
-            elif rule["action"] == "flag_for_review" and final_action == "auto_approve":
-                final_action = "flag_for_review"
-
-    logger.info(f"Auto-adjudication completed for claim {claim_id}, action: {final_action}, triggered rules: {len(triggered_rules)}")
-    
-    update_data = {
-        "adjudication_result": {"action": final_action, "triggered_rules": triggered_rules},
-        "triggered_rules": triggered_rules,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    if final_action == "auto_deny":
-        update_data.update({
-            "status": "rejected", 
-            "denial_code": denial_code,
-            "decision_reason": f"Auto-adjudicated: {denial_reason}",
-            "decided_at": datetime.now(timezone.utc).isoformat()
-        })
-        logger.info(f"Claim {claim_id} auto-denied")
-    elif final_action == "auto_approve" and not triggered_rules:
-        update_data.update({
-            "status": "approved", 
-            "decision_reason": "Auto-approved: passed all adjudication rules",
-            "decided_at": datetime.now(timezone.utc).isoformat()
-        })
-        logger.info(f"Claim {claim_id} auto-approved")
-
-    supabase.table("insurer_claims").update(update_data).eq("id", claim_id).execute()
-    return {"action": final_action, "triggered_rules": triggered_rules}
-
-
-@router.post("/auto-adjudicate")
-async def auto_adjudicate_endpoint(payload: AutoAdjudicateRequest, current_user = Depends(get_current_user)):
-    logger.info(f"Auto-adjudicate request from user {current_user.id}, claim: {payload.claimId}")
-    result = await run_auto_adjudicate(payload.claimId, current_user.id)
-    return result
+    # Placeholder for Module 4 (Human Workbench)
+    return {"status": "Not Implemented Yet. Building in Module 4."}

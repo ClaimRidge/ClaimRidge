@@ -64,14 +64,46 @@ export default function InsurerClaimsPage() {
   const supabase = createClient();
 
   const fetchClaims = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
     const { data } = await supabase
-      .from("insurer_claims")
+      .from("claims")
       .select("*")
+      .eq("payer_id", session.user.id)
       .order("ai_risk_score", { ascending: false, nullsFirst: false });
 
-    if (data) setClaims(data as InsurerClaim[]);
+    if (data) {
+      const mappedClaims: InsurerClaim[] = data.map((c: any) => ({
+        id: c.id,
+        claim_number: c.claim_number,
+        clinic_id: c.clinic_id || null,
+        clinic_name: c.provider_name || 'Unknown Clinic',
+        insurer_id: c.payer_id,
+        patient_name: c.patient_name,
+        patient_national_id: c.patient_id,
+        patient_dob: null,
+        patient_gender: null,
+        diagnosis_codes: c.diagnosis_codes || [],
+        diagnosis_description: null,
+        procedure_codes: c.procedure_codes || [],
+        procedure_description: c.notes || '',
+        service_date: c.date_of_service,
+        amount_jod: Number(c.total_billed),
+        status: (["submitted", "intake_complete"].includes(c.status) ? "pending" : c.status) as InsurerClaimStatus,
+        submitted_at: c.created_at,
+        decided_at: c.status === 'approved' || c.status === 'rejected' ? c.updated_at : null,
+        decided_by: null,
+        decision_reason: null,
+        ai_risk_score: c.ai_risk_score,
+        ai_recommendation: null,
+        created_at: c.created_at,
+        updated_at: c.updated_at || c.created_at,
+      }));
+      setClaims(mappedClaims);
+    }
     setLoading(false);
-  }, []);
+  }, [supabase]);
 
   useEffect(() => { fetchClaims(); }, [fetchClaims]);
 
