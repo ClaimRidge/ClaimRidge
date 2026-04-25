@@ -1,4 +1,6 @@
 "use client";
+// Force re-build
+
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
@@ -21,13 +23,16 @@ import {
 } from "lucide-react";
 
 const NAV_ITEMS = [
-  { href: "/insurer/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/insurer/claims", label: "Claims", icon: FileSearch },
-  { href: "/insurer/rules", label: "Rules", icon: Scale },
-  { href: "/insurer/providers", label: "Providers", icon: Users },
-  { href: "/insurer/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/insurer/fraud", label: "Fraud Detection", icon: ShieldAlert },
-  { href: "/insurer/settings", label: "Settings", icon: Settings },
+  { href: "/dashboard/insurance", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/insurance/claims", label: "Claims", icon: FileSearch },
+  { href: "/dashboard/insurance/policies", label: "Policies", icon: Scale },
+  { href: "/dashboard/insurance/providers", label: "Providers", icon: Users },
+  { href: "/dashboard/insurance/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/dashboard/insurance/fraud", label: "Fraud Detection", icon: ShieldAlert },
+  { href: "/dashboard/insurance/payments", label: "Payments", icon: Building2 },
+  { href: "/dashboard/insurance/appeals", label: "Appeals", icon: Scale },
+  { href: "/dashboard/insurance/audit", label: "Compliance", icon: ShieldAlert },
+  { href: "/dashboard/insurance/settings", label: "Settings", icon: Settings },
 ];
 
 export default function InsurerLayout({ children }: { children: React.ReactNode }) {
@@ -107,7 +112,7 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
       {/* Sidebar - Desktop */}
       <aside className="hidden lg:flex lg:flex-col lg:w-64 bg-[#0A1628] text-white">
         <div className="p-5 border-b border-white/10">
-          <Link href="/insurer/dashboard">
+          <Link href="/dashboard/insurance">
             <ClaimRidgeLogo size={28} variant="dark" />
           </Link>
         </div>
@@ -153,7 +158,7 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
 
       {/* Mobile Header */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-[#0A1628] text-white px-4 h-14 flex items-center justify-between">
-        <Link href="/insurer/dashboard">
+        <Link href="/dashboard/insurance">
           <ClaimRidgeLogo size={24} variant="dark" />
         </Link>
         <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1">

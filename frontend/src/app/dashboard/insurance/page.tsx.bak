@@ -1,0 +1,231 @@
+"use client";
+// Force re-build
+
+
+import { useEffect, useState, useMemo } from "react";
+import Link from "next/link";
+import { createClient } from "@/lib/supabase/client";
+import { 
+  Inbox, 
+  ShieldCheck, 
+  Zap, 
+  AlertCircle, 
+  TrendingUp, 
+  Clock, 
+  Activity,
+  ArrowUpRight,
+  Sparkles,
+  Search,
+  DollarSign,
+  Gavel,
+  History,
+  Workflow
+} from "lucide-react";
+import { formatJod } from "@/lib/utils/format";
+
+interface ModuleStatus {
+  id: string;
+  name: string;
+  icon: any;
+  status: "Active" | "Developing" | "Disabled";
+  value?: string | number;
+  label?: string;
+  href: string;
+  color: string;
+}
+
+export default function InsurerDashboardPage() {
+  const [claimsCount, setClaimsCount] = useState(0);
+  const [exposure, setExposure] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const supabase = createClient();
+
+  useEffect(() => {
+    async function loadStats() {
+      const { data } = await supabase.from("insurer_claims").select("amount_jod, status");
+      if (data) {
+        setClaimsCount(data.length);
+        const pending = data.filter(c => c.status === "pending" || c.status === "under_review");
+        setExposure(pending.reduce((acc, curr) => acc + Number(curr.amount_jod), 0));
+      }
+      setLoading(false);
+    }
+    loadStats();
+  }, []);
+
+  const modules: ModuleStatus[] = [
+    { id: "M1", name: "Intake Engine", icon: Inbox, status: "Active", value: claimsCount, label: "Total Claims", href: "/dashboard/insurance/claims", color: "blue" },
+    { id: "M2", name: "Eligibility", icon: ShieldCheck, status: "Developing", value: "99.2%", label: "Accuracy", href: "/dashboard/insurance/policies", color: "green" },
+    { id: "M3", name: "Pricing Core", icon: DollarSign, status: "Developing", value: "v2.1", label: "Tariff v2", href: "/dashboard/insurance/policies", color: "amber" },
+    { id: "M4", name: "Medical Review", icon: Activity, status: "Developing", value: "AI Assisted", label: "Protocol v4", href: "/dashboard/insurance/claims", color: "indigo" },
+    { id: "M5", name: "Fraud Watch", icon: Search, status: "Developing", value: 12, label: "Flags Today", href: "/dashboard/insurance/fraud", color: "red" },
+    { id: "M6", name: "Adjudication", icon: Gavel, status: "Developing", value: "72%", label: "Auto-rate", href: "/dashboard/insurance/policies", color: "purple" },
+    { id: "M7", name: "Payment Hub", icon: Workflow, status: "Developing", value: "Weekly", label: "Cycle", href: "/dashboard/insurance/payments", color: "cyan" },
+    { id: "M8", name: "Appeals", icon: History, status: "Developing", value: "48h", label: "Avg SLA", href: "/dashboard/insurance/appeals", color: "rose" },
+    { id: "M9", name: "Analytics", icon: TrendingUp, status: "Developing", value: "Real-time", label: "Sync", href: "/dashboard/insurance/analytics", color: "emerald" },
+    { id: "M10", name: "Compliance", icon: Clock, status: "Developing", value: "Immutable", label: "Event Log", href: "/dashboard/insurance/audit", color: "slate" },
+  ];
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#05080d] flex items-center justify-center">
+        <div className="relative">
+          <div className="h-24 w-24 border-4 border-white/5 border-t-emerald-500 rounded-full animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Zap className="h-8 w-8 text-emerald-500 animate-pulse" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#05080d] text-white p-6 lg:p-10 font-sans selection:bg-emerald-500/30">
+      {/* Header Section */}
+      <div className="flex flex-col md:flex-row md:items-end justify-between mb-12 gap-6">
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-emerald-500 font-mono text-xs tracking-widest uppercase">System Operational</span>
+          </div>
+          <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white mb-2">
+            Command <span className="text-emerald-500">Center</span>
+          </h1>
+          <p className="text-slate-400 max-w-md">
+            Next-generation payer adjudication interface monitoring 10 core AI-driven modules.
+          </p>
+        </div>
+
+        <div className="flex gap-4">
+          <div className="bg-white/5 border border-white/10 p-4 rounded-2xl backdrop-blur-xl">
+            <p className="text-slate-500 text-xs font-bold uppercase mb-1">Active Exposure</p>
+            <p className="text-2xl font-mono font-bold text-white tracking-tighter">{formatJod(exposure)}</p>
+          </div>
+          <Link 
+            href="/dashboard/insurance/claims"
+            className="bg-emerald-500 hover:bg-emerald-400 text-black px-6 py-4 rounded-2xl font-bold flex items-center gap-2 transition-all hover:scale-105 active:scale-95"
+          >
+            Run Batch Adjudication <ArrowUpRight className="h-5 w-5" />
+          </Link>
+        </div>
+      </div>
+
+      {/* Module Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-5 mb-10">
+        {modules.map((m) => (
+          <Link 
+            key={m.id} 
+            href={m.href}
+            className="group relative bg-white/[0.03] border border-white/10 p-6 rounded-3xl hover:bg-white/[0.07] hover:border-emerald-500/30 transition-all duration-500 overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-100 transition-opacity">
+              <m.icon className="h-12 w-12 text-emerald-500" />
+            </div>
+            
+            <div className="relative z-10">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-tighter">{m.id}</span>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  m.status === "Active" ? "bg-emerald-500/10 text-emerald-500" : "bg-white/5 text-slate-400"
+                }`}>
+                  {m.status}
+                </span>
+              </div>
+              
+              <h3 className="text-lg font-bold text-white mb-6 group-hover:text-emerald-400 transition-colors">{m.name}</h3>
+              
+              <div>
+                <p className="text-2xl font-mono font-bold text-white leading-none mb-1">{m.value || "---"}</p>
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{m.label}</p>
+              </div>
+            </div>
+            
+            {/* Glow effect on hover */}
+            <div className="absolute -bottom-10 -right-10 w-32 h-32 bg-emerald-500/10 blur-[60px] opacity-0 group-hover:opacity-100 transition-opacity" />
+          </Link>
+        ))}
+      </div>
+
+      {/* Main Content Area */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Adjudication Pipeline */}
+        <div className="lg:col-span-2 bg-white/[0.02] border border-white/10 rounded-[40px] p-8 relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-8">
+             <Sparkles className="h-6 w-6 text-emerald-500 opacity-20" />
+          </div>
+          
+          <h2 className="text-2xl font-black mb-8 flex items-center gap-3">
+            Processing Pipeline <span className="text-xs font-mono font-normal text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded">Live</span>
+          </h2>
+          
+          <div className="space-y-6">
+            {[
+              { label: "Intake & Normalization", progress: 100, status: "Operational", count: 1420 },
+              { label: "Medical Necessity Review", progress: 65, status: "Active", count: 284 },
+              { label: "Fraud Pattern Scanning", progress: 85, status: "Active", count: 12 },
+              { label: "Final Adjudication", progress: 30, status: "Queued", count: 92 }
+            ].map((step, i) => (
+              <div key={i} className="space-y-2">
+                <div className="flex justify-between text-xs font-bold uppercase tracking-widest">
+                  <span className="text-slate-400">{step.label}</span>
+                  <span className="text-emerald-500">{step.count} Claims</span>
+                </div>
+                <div className="h-3 bg-white/5 rounded-full overflow-hidden p-0.5">
+                  <div 
+                    className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-1000"
+                    style={{ width: `${step.progress}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* System Health */}
+        <div className="bg-[#0A1628] rounded-[40px] p-8 border border-white/5 flex flex-col justify-between">
+           <div>
+              <h2 className="text-2xl font-black mb-2">Neural Engine</h2>
+              <p className="text-slate-400 text-sm mb-8">Platform performance and AI decision confidence metrics.</p>
+              
+              <div className="space-y-8">
+                <div className="flex items-center gap-4">
+                  <div className="h-12 w-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
+                    <Zap className="h-6 w-6 text-emerald-500" />
+                  </div>
+                  <div>
+                    <p className="text-white font-bold">142ms</p>
+                    <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest">Inference Latency</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-4">
+                  <div className="h-12 w-12 rounded-2xl bg-blue-500/10 flex items-center justify-center">
+                    <ShieldCheck className="h-6 w-6 text-blue-500" />
+                  </div>
+                  <div>
+                    <p className="text-white font-bold">98.4%</p>
+                    <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest">Decision Confidence</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-4">
+                  <div className="h-12 w-12 rounded-2xl bg-amber-500/10 flex items-center justify-center">
+                    <AlertCircle className="h-6 w-6 text-amber-500" />
+                  </div>
+                  <div>
+                    <p className="text-white font-bold">3.2%</p>
+                    <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest">Manual Override Rate</p>
+                  </div>
+                </div>
+              </div>
+           </div>
+           
+           <div className="mt-8 pt-8 border-t border-white/5">
+              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-widest mb-2">Platform Version</p>
+              <p className="text-white font-mono text-sm">CLAIMRIDGE-CORE v3.11.0</p>
+           </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -109,6 +109,8 @@ CREATE TABLE public.profiles (
   contact_email text,
   country_code text DEFAULT 'JOR'::text,
   config_json jsonb DEFAULT '{}'::jsonb,
+  policy_file_path text,
+  policy_file_name text,
   CONSTRAINT profiles_pkey PRIMARY KEY (id),
   CONSTRAINT profiles_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id)
 );

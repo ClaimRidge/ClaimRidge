@@ -353,7 +353,7 @@ export default function InsurerClaimsPage() {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <Link href={`/insurer/claims/${c.id}`} className="text-sm font-mono font-medium text-[#16a34a] hover:text-[#15803d]">
+                        <Link href={`/dashboard/insurance/claims/${c.id}`} className="text-sm font-mono font-medium text-[#16a34a] hover:text-[#15803d]">
                           {c.claim_number}
                         </Link>
                       </td>
@@ -384,7 +384,7 @@ export default function InsurerClaimsPage() {
                         {actionMenuId === c.id && (
                           <div className="absolute right-4 top-10 z-20 bg-white border border-[#e5e7eb] rounded-lg shadow-lg py-1 w-36">
                             <Link
-                              href={`/insurer/claims/${c.id}`}
+                              href={`/dashboard/insurance/claims/${c.id}`}
                               className="block px-4 py-2 text-sm text-[#374151] hover:bg-[#f9fafb]"
                             >
                               View

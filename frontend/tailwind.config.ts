@@ -82,6 +82,7 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-inter)", "Inter", "system-ui", "sans-serif"],
         display: ["var(--font-playfair)", "Georgia", "'Times New Roman'", "serif"],
+        syne: ["var(--font-syne)", "sans-serif"],
       },
       boxShadow: {
         glow: "0 0 24px rgba(22, 163, 74, 0.22)",

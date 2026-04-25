@@ -6,7 +6,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { Shield, Building2, Stethoscope, ArrowRight, ArrowLeft } from "lucide-react";
+import { Shield, Building2, Stethoscope, ArrowRight, ArrowLeft, ShieldCheck } from "lucide-react";
 
 type Role = "provider" | "insurance" | null;
 
@@ -33,11 +33,8 @@ export default function SignupPage() {
     companyNameEn: "",
     companyNameAr: "",
     licenseNumber: "",
-    payerCode: "",
-    jurisdiction: "",
-    policySetup: "",
-    tariffSchedules: "",
-    autoApproveThreshold: ""
+    policyFileBase64: "",
+    policyFileName: ""
   });
 
   const [error, setError] = useState("");
@@ -93,13 +90,10 @@ export default function SignupPage() {
           account_type: "insurance",
           organization_name: insuranceDetails.companyNameEn,
           license_number: insuranceDetails.licenseNumber,
-          payer_code: insuranceDetails.payerCode,
           config_json: {
             organization_name_ar: insuranceDetails.companyNameAr,
-            jurisdiction: insuranceDetails.jurisdiction,
-            policy_setup: insuranceDetails.policySetup,
-            tariff_schedules: insuranceDetails.tariffSchedules,
-            auto_approve_threshold: insuranceDetails.autoApproveThreshold
+            policy_file_base64: insuranceDetails.policyFileBase64,
+            policy_file_name: insuranceDetails.policyFileName
           }
         };
       }
@@ -118,8 +112,43 @@ export default function SignupPage() {
         return;
       }
 
+      // Create profile entries
+      if (data.user) {
+        const configJson = role === "provider" 
+          ? { organization_name_ar: providerDetails.legalNameAr, address: providerDetails.address }
+          : { 
+              organization_name_ar: insuranceDetails.companyNameAr, 
+              policy_file_base64: insuranceDetails.policyFileBase64, 
+              policy_file_name: insuranceDetails.policyFileName 
+            };
+
+        const profileData: any = {
+          id: data.user.id,
+          account_type: role,
+          organization_name: role === "provider" ? providerDetails.legalNameEn : insuranceDetails.companyNameEn,
+          license_number: role === "provider" ? providerDetails.licenseNumber : insuranceDetails.licenseNumber,
+          contact_email: role === "provider" ? providerDetails.primaryEmail : email,
+          config_json: configJson
+        };
+
+        await supabase.from("profiles").upsert(profileData);
+
+        if (role === "insurance") {
+          await supabase.from("insurer_profiles").upsert({
+            user_id: data.user.id,
+            company_name: insuranceDetails.companyNameEn,
+            updated_at: new Date().toISOString()
+          });
+        }
+      }
+
       // In dev mode with email confirmation disabled, we can redirect immediately
-      router.push("/dashboard");
+      // Redirect based on role
+      if (role === "insurance") {
+        router.push("/dashboard/insurance");
+      } else {
+        router.push("/dashboard/provider");
+      }
       router.refresh();
     } catch {
       setError("An unexpected error occurred. Please try again.");
@@ -284,21 +313,53 @@ export default function SignupPage() {
 
           {/* STEP 3: INSURANCE DETAILS */}
           {step === 3 && role === "insurance" && (
-            <form onSubmit={handleSignup} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <form onSubmit={handleSignup} className="space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b border-gray-100">
                 <div className="space-y-4">
-                  <h3 className="font-semibold text-gray-900 border-b pb-2">Corporate Identity</h3>
+                  <h3 className="font-semibold text-gray-900">Company Identity</h3>
                   <Input id="companyNameEn" label="Company Name (English)" value={insuranceDetails.companyNameEn} onChange={e => setInsuranceDetails({...insuranceDetails, companyNameEn: e.target.value})} required />
                   <Input id="companyNameAr" label="Company Name (Arabic)" value={insuranceDetails.companyNameAr} onChange={e => setInsuranceDetails({...insuranceDetails, companyNameAr: e.target.value})} />
-                  <Input id="licenseNumberIns" label="Insurance License Number" value={insuranceDetails.licenseNumber} onChange={e => setInsuranceDetails({...insuranceDetails, licenseNumber: e.target.value})} required />
-                  <Input id="payerCode" label="Unique Payer Code" value={insuranceDetails.payerCode} onChange={e => setInsuranceDetails({...insuranceDetails, payerCode: e.target.value})} required />
-                  <Input id="jurisdiction" label="Regulatory Jurisdiction (e.g. Jordan PDPL)" value={insuranceDetails.jurisdiction} onChange={e => setInsuranceDetails({...insuranceDetails, jurisdiction: e.target.value})} required />
                 </div>
                 <div className="space-y-4">
-                  <h3 className="font-semibold text-gray-900 border-b pb-2">Adjudication & Rules Setup</h3>
-                  <Input id="policySetup" label="Policy & Member Data rules" placeholder="e.g. Maternity waiting periods" value={insuranceDetails.policySetup} onChange={e => setInsuranceDetails({...insuranceDetails, policySetup: e.target.value})} />
-                  <Input id="tariffSchedules" label="Tariff/Contract Schedules setup" placeholder="e.g. Network A rates" value={insuranceDetails.tariffSchedules} onChange={e => setInsuranceDetails({...insuranceDetails, tariffSchedules: e.target.value})} />
-                  <Input id="autoApproveThreshold" label="Adjudication Auto-Approve Threshold" placeholder="e.g. Claims under 50 JOD with 0 risk flags" value={insuranceDetails.autoApproveThreshold} onChange={e => setInsuranceDetails({...insuranceDetails, autoApproveThreshold: e.target.value})} required />
+                  <h3 className="font-semibold text-gray-900">Legal Verification</h3>
+                  <Input id="licenseNumberIns" label="Insurance License Number" value={insuranceDetails.licenseNumber} onChange={e => setInsuranceDetails({...insuranceDetails, licenseNumber: e.target.value})} required />
+                  <p className="text-xs text-gray-500 mt-2">Enter your official regulatory license number to verify your organization.</p>
+                </div>
+              </div>
+
+              <div className="bg-[#fcfdfc] border border-[#f0fdf4] rounded-2xl p-6 shadow-sm">
+                <label className="block text-base font-bold text-[#0a0a0a] mb-1">
+                  Policy & Member Data Rules <span className="text-gray-400 font-normal text-sm">(Optional)</span>
+                </label>
+                <p className="text-sm text-[#6b7280] mb-4">Upload your policy guidelines as a PDF. This helps our AI automate your claim reviews.</p>
+                
+                <div className="relative">
+                  <input 
+                    type="file" 
+                    accept="application/pdf"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const base64 = (reader.result as string).split(',')[1];
+                          setInsuranceDetails(prev => ({ 
+                            ...prev, 
+                            policyFileBase64: base64,
+                            policyFileName: file.name
+                          }));
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    className="w-full px-4 py-3 bg-white border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] rounded-xl text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#f0fdf4] file:text-[#16a34a] hover:file:bg-[#dcfce7] cursor-pointer transition-all"
+                  />
+                  {insuranceDetails.policyFileName && (
+                    <p className="mt-3 text-sm text-[#16a34a] font-semibold flex items-center gap-1.5">
+                      <ShieldCheck className="h-4 w-4" />
+                      {insuranceDetails.policyFileName} ready for upload
+                    </p>
+                  )}
                 </div>
               </div>
               <Button type="submit" loading={loading} className="w-full" size="lg">

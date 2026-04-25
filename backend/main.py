@@ -1,7 +1,7 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import claims, insurer, pdf
+from routers import claims, insurer
 from core.config import logger
 
 app = FastAPI(title="ClaimRidge API")
@@ -18,7 +18,6 @@ app.add_middleware(
 # Register routers
 app.include_router(claims.router)
 app.include_router(insurer.router)
-app.include_router(pdf.router)
 
 @app.on_event("startup")
 async def startup_event():

@@ -80,6 +80,7 @@ export interface Claim {
   claim_number?: string;
   patient_name: string;
   patient_id: string;
+  member_id?: string;        // Added to fix the error
   date_of_service: string;
   provider_name: string;
   provider_id: string;
@@ -89,6 +90,8 @@ export interface Claim {
   diagnosis_codes: string[];
   procedure_codes: string[];
   billed_amount: number;
+  total_billed?: number;
+  currency?: string;
   notes: string;
   status: ClaimStatus;
   scrub_result: ScrubResult | null;

@@ -115,7 +115,7 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
         <XCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
         <h1 className="font-display text-xl font-bold text-[#0a0a0a] mb-2">Claim Not Found</h1>
         <p className="text-[#6b7280] mb-6">{error}</p>
-        <Link href="/insurer/claims">
+        <Link href="/dashboard/insurance/claims">
           <Button variant="outline">Back to Claims</Button>
         </Link>
       </div>

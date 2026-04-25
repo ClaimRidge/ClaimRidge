@@ -9,13 +9,14 @@ import Button from "@/components/ui/Button";
 import { generateClaimPdf } from "@/lib/pdf/claimPdf";
 import { generateCorrectedClaimPdf } from "@/lib/pdf/correctedClaimPdf";
 import { generatePayerClaimPdf } from "@/lib/pdf/payerClaimPdf";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import {
   CheckCircle,
   AlertTriangle,
   XCircle,
   Info,
   ArrowLeft,
-  LayoutDashboard,
   FilePlus,
   Download,
   FileCheck,
@@ -62,7 +63,7 @@ function ScoreRing({ score }: { score: number }) {
           className={color}
         />
       </svg>
-      <span className={`font-display absolute text-3xl font-extrabold ${color}`}>{score}</span>
+      <span className={`font-sans absolute text-4xl font-black tracking-tighter tabular-nums ${color}`}>{score}</span>
     </div>
   );
 }
@@ -157,44 +158,96 @@ export default function ResultsPage() {
   const handleDownloadPayerPdf = async () => {
     if (!claim) return;
     setGeneratingPayerPdf(true);
+    
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const PAYER_COLORS: Record<string, string> = {
+        "ARAB_ORIENT": "#1B4F72", "GIG_JORDAN": "#1A5276", "ALAI": "#145A32",
+        "AL_NISR": "#6E2F0A", "ARAB_ASSURERS": "#2C3E50", "JORDAN_INSURANCE": "#1F618D",
+        "MIDDLE_EAST_INS": "#7D6608", "ISLAMIC_INSURANCE": "#1E8449",
+        "MEDNET": "#6C3483", "NEXTCARE": "#0E6655"
+      };
+
+      const doc = new jsPDF();
+      const accentColor = PAYER_COLORS[claim.payer_code || ""] || "#1a1a1a";
+      const claimIdShort = claim.claim_number || claim.id.slice(0, 8).toUpperCase();
       
-      // Call Python Backend
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/pdf/generate`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session?.access_token}`
-        },
-        body: JSON.stringify({
-          patientName: claim.patient_name,
-          patientId: claim.patient_id,
-          payerCode: claim.payer_code || "GENERIC",
-          payerNameEn: claim.payer_name,
-          dateOfService: claim.date_of_service,
-          diagnosisCodes: claim.diagnosis_codes,
-          procedureCodes: claim.procedure_codes,
-          billedAmount: claim.billed_amount,
-          claimNumber: claim.id.slice(0, 8).toUpperCase()
-        }),
+      // Header Section
+      doc.setTextColor(accentColor);
+      doc.setFontSize(18);
+      doc.setFont("helvetica", "bold");
+      doc.text(claim.payer_name || "Medical Claim Form", 14, 20);
+
+      doc.setTextColor("#6b7280");
+      doc.setFontSize(11);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Claim Number: ${claimIdShort}`, 14, 28);
+      
+      // Divider Line
+      doc.setDrawColor(accentColor);
+      doc.setLineWidth(1);
+      doc.line(14, 32, 196, 32);
+
+      // Patient Info Section
+      doc.setTextColor("#0a0a0a");
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "bold");
+      doc.text("Patient Information", 14, 42);
+      
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Name: ${claim.patient_name} | ID: ${claim.patient_id} | DOS: ${claim.date_of_service}`, 14, 48);
+
+      // Diagnosis Codes Table
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "bold");
+      doc.text("Diagnosis Codes", 14, 60);
+
+      autoTable(doc, {
+        startY: 64,
+        head: [['#', 'Code', 'Type']],
+        body: (claim.diagnosis_codes || []).filter(Boolean).map((dx, i) => [
+          i + 1, 
+          dx, 
+          i === 0 ? 'Primary' : 'Secondary'
+        ]),
+        headStyles: { fillColor: accentColor, textColor: '#ffffff' },
+        styles: { fontSize: 10, cellPadding: 3 },
       });
 
-      if (!response.ok) throw new Error("Failed to generate PDF on server");
+      // Procedure Codes Table
+      const nextY = (doc as any).lastAutoTable.finalY + 12;
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "bold");
+      doc.text("Procedure Codes", 14, nextY);
 
-      // Process binary response
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `claim_${claim.id.slice(0, 8)}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const amountToBill = claim.billed_amount || claim.total_billed || 0;
 
-      showToast("Claim PDF downloaded from server");
+      autoTable(doc, {
+        startY: nextY + 4,
+        head: [['Code', 'Date', 'Amount', 'Type']],
+        body: (claim.procedure_codes || []).filter(Boolean).map((cpt, i) => [
+          cpt,
+          claim.date_of_service,
+          i === 0 ? `${amountToBill} JOD` : '-',
+          i === 0 ? 'Primary' : 'Additional'
+        ]),
+        headStyles: { fillColor: accentColor, textColor: '#ffffff' },
+        styles: { fontSize: 10, cellPadding: 3 },
+      });
+
+      // Total Billed
+      const finalY = (doc as any).lastAutoTable.finalY + 15;
+      doc.setFontSize(12);
+      doc.setFont("helvetica", "bold");
+      doc.text(`Total Billed: ${amountToBill} JOD`, 14, finalY);
+
+      // Save the PDF locally without hitting the backend
+      doc.save(`${claimIdShort}_${claim.payer_code || 'GENERIC'}.pdf`);
+
+      showToast("Claim PDF generated successfully!");
     } catch (err) {
-      console.error("Payer PDF download failed:", err);
+      console.error("PDF generation failed:", err);
+      showToast("Failed to generate PDF. Please try again.");
     } finally {
       setGeneratingPayerPdf(false);
     }
@@ -202,16 +255,25 @@ export default function ResultsPage() {
 
   useEffect(() => {
     const fetchClaim = async () => {
+      // Safely unwrap the param
+      const claimId = params?.id as string;
+      if (!claimId) return;
+
       try {
         const { data, error: supabaseError } = await supabase
           .from("claims")
           .select("*")
-          .eq("id", params.id)
+          .eq("id", claimId)
           .single();
 
         if (supabaseError) {
           console.error("Supabase error fetching claim:", supabaseError);
-          setError(`Database error: ${supabaseError.message}`);
+          // PGRST116 indicates 0 rows returned (ID does not exist)
+          if (supabaseError.code === 'PGRST116') {
+             setError("This claim could not be found. It may have been deleted or the link is incorrect.");
+          } else {
+             setError(`Database error: ${supabaseError.message}`);
+          }
           setLoading(false);
           return;
         }
@@ -277,11 +339,20 @@ export default function ResultsPage() {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-6">
-        <button onClick={() => router.back()} className="text-[#9ca3af] hover:text-[#16a34a] transition-colors" aria-label="Back">
-          <ArrowLeft className="h-5 w-5" />
-        </button>
-        <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-[#0a0a0a]">Scrub Results</h1>
+      <div className="mb-6">
+        <Link
+          href="/dashboard"
+          className="group flex items-center gap-2 text-sm font-medium text-[#6b7280] hover:text-[#16a34a] transition-colors"
+        >
+          <div className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-[#e5e7eb] group-hover:border-[#16a34a] group-hover:bg-[#f0fdf4] transition-all">
+            <ArrowLeft className="h-4 w-4" />
+          </div>
+          Back to Dashboard
+        </Link>
+      </div>
+
+      <div className="mb-8">
+        <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0a0a0a]">Scrub Results</h1>
       </div>
 
       {/* Summary Card */}
@@ -385,7 +456,7 @@ export default function ResultsPage() {
           {generatingPayerPdf ? "Generating PDF..." : "Download Claim PDF"}
         </Button>
         <Button
-          variant="primary"
+          variant="secondary"
           className="gap-2 w-full sm:w-auto"
           onClick={handleDownloadCorrected}
           loading={downloadingCorrected}
@@ -402,18 +473,6 @@ export default function ResultsPage() {
           <Download className="h-4 w-4" />
           Export Scrub Report
         </Button>
-        <Link href="/dashboard" className="w-full sm:w-auto">
-          <Button variant="ghost" className="gap-2 w-full">
-            <LayoutDashboard className="h-4 w-4" />
-            Dashboard
-          </Button>
-        </Link>
-        <Link href="/claims/new" className="w-full sm:w-auto">
-          <Button variant="secondary" className="gap-2 w-full">
-            <FilePlus className="h-4 w-4" />
-            New Claim
-          </Button>
-        </Link>
       </div>
 
       {/* Toast notification */}

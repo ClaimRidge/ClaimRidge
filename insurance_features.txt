@@ -1,0 +1,205 @@
+M1 — Claim Intake & Normalization
+Purpose
+Accept claims from every channel an insurer uses today (portal, API, email, fax, paper) and convert them
+into a single internal representation. This is the gateway into everything downstream.
+Inputs
+Direct API call from ClaimRidge clinic-side portal (primary, structured JSON).
+Payer portal upload — structured form submitted by clinic staff.
+Email attachment — PDF claim (CMS-1500-style, or payer-specific forms).
+Scanned / photographed paper claims (OCR required).
+Legacy insurer systems — CSV, XLS, flat-file exports.
+Features to build
+Multi-channel receiver: REST endpoint, email ingestion, S3 drop folder, SFTP.
+OCR pipeline for scanned documents — structured extraction of patient, provider, codes, amounts.
+LLM-based normalizer — maps any input into the internal Claim schema using Claude with
+function calling.
+Dedup engine — detects duplicate submissions by hash of (patient_id, provider_id, service_date,
+codes, amount).
+Completeness check — flags missing required fields before pipeline entry.
+Intake status dashboard — volume by channel, failure rate, OCR confidence distribution.
+Output
+A validated Claim record in Supabase with status intake_complete, ready for M2. Any claim that cannot be
+normalized is routed to a manual correction queue with the extracted raw content attached.
+M2 — Eligibility & Coverage Verification
+Purpose
+Answer four yes/no questions fast: (1) is the patient a member of this payer, (2) was the policy active on
+the date of service, (3) is the service covered by the plan, (4) was pre-authorization required and obtained.
+Features to build
+Member master lookup — query against the payer's policy database (internal Supabase table for
+MVP, API integration in Phase 2).
+Policy state check — active / suspended / lapsed / terminated, with effective dates.
+Coverage rules engine — per-plan inclusions, exclusions, sub-limits (e.g. maternity covered only
+after 10 months, dental capped at 500 JOD per year).
+Network check — is the submitting provider in-network for this plan tier.
+Pre-auth verification — cross-reference against the pre-auth registry, match auth number, service
+dates, approved procedures.
+Benefits remaining ledger — track year-to-date utilization vs annual limits per member, per benefit
+category.
+Page 4
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+AI involvement
+Minimal at this stage — eligibility is fundamentally deterministic. AI is used only to map free-text service
+descriptions to coverage categories when codes are ambiguous.
+Output
+An EligibilityResult object attached to the claim: {eligible: bool, reasons: [], flags: [], benefits_remaining:
+{...}}. If any hard fail, claim routes straight to M6 for denial.
+Page 5
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+M3 — Coding & Pricing Validation
+Purpose
+Verify that the codes on the claim are valid, internally consistent, and priced according to the provider's
+contracted tariff.
+Features to build
+Code dictionary — ICD-10 diagnoses, CPT procedures, and local code sets per country (Jordan's
+local coding, Saudi NPHIES, UAE DHPO). Bilingual Arabic / English labels.
+Diagnosis-procedure compatibility checker — flags combinations that are clinically impossible or
+inconsistent (pregnancy codes on male patients, pediatric codes on adults).
+Upcoding detector — compares billed code to documented services and flags upgrades (e.g.
+comprehensive visit billed when documentation supports only a focused one).
+Unbundling detector — flags procedures billed separately that should be bundled under a single
+code per payer policy.
+Duplicate line detector — same code, same date, same patient.
+Tariff engine — per-provider, per-plan contracted rates. Supports fee schedules, capped amounts,
+bundled episodes, and co-pay / co-insurance calculations.
+Pricing exception flagger — anything outside ±5% of the expected tariff price.
+AI involvement
+LLM (Claude Haiku or Sonnet depending on cost vs accuracy) reads the documentation narrative and
+compares it to the billed codes, returning a structured coding_alignment_score from 0–1 with highlighted
+discrepancies.
+Output
+A CodingResult object: approved lines, flagged lines with reasons, recalculated allowed amount, and a
+coding confidence score.
+M4 — Medical Necessity Review
+Purpose
+Decide whether the service billed was clinically appropriate for the diagnosis, patient profile, and care
+history. This is the module with the highest clinical risk and therefore the highest human-in-the-loop
+requirement.
+Features to build
+Guideline library — structured clinical guidelines per condition, sourced from WHO, NICE, AHA,
+and local Jordanian / GCC protocols. Versioned.
+Patient clinical history — aggregate view of prior claims for this patient with this payer (critical
+context).
+Guideline-match engine — LLM reads claim + patient history, compares against applicable
+guidelines, returns adherence score.
+Complexity classifier — scores claims 1–5 on medical complexity; 1–2 auto-adjudicate, 3 optional
+review, 4–5 mandatory review.
+Medical Officer workbench — clean UI showing claim, patient history timeline, guideline excerpt,
+AI recommendation, and approve / modify / deny with required justification.
+Page 6
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+Second opinion routing — specific diagnoses (oncology, rare conditions, high-cost procedures)
+auto-route to a specialist reviewer.
+AI involvement
+Heavy. The AI produces a draft recommendation with reasoning, citations to the relevant guideline, and
+confidence score. The medical officer reviews, edits, or overrides. Every AI recommendation and every
+human override is logged to M10.
+Non-negotiable constraint
+The AI never auto-approves a medical necessity decision at complexity 3+. A licensed physician on the
+payer's staff is the decision-maker. We are an assistive workbench, not an autonomous adjudicator. This
+is both a regulatory requirement (insurance law) and a liability posture.
+Page 7
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+M5 — Fraud, Waste & Abuse Detection
+Purpose
+Catch fraudulent, wasteful, or abusive billing in real time — at submission, not six months later in an audit.
+This is one of the most commercially valuable modules for the insurer (direct savings).
+Three detection layers
+Rules layer — deterministic patterns: service dates on weekends when clinic is closed, impossible
+volumes (50+ patients in one day from one provider), same patient at two providers on the same
+day.
+Statistical layer — provider billing outliers vs peer group (same specialty, same city). Uses z-score /
+percentile deviation on metrics like average claim value, procedures per visit, diagnosis diversity.
+ML layer — supervised classifier trained on historical confirmed-fraud cases, unsupervised anomaly
+detection (Isolation Forest / autoencoders) for novel patterns.
+Features to build
+Real-time fraud score on every claim at submission.
+Provider risk profile — rolling score per provider with trend line.
+Case builder — when a provider crosses threshold, system auto-assembles an evidence package
+(flagged claims, pattern charts, peer comparison) for a Fraud Analyst.
+Pattern library — catalog of known fraud schemes (phantom billing, identity swap, kickback rings,
+medical identity theft) with detection rules.
+Investigator workflow — assign case, gather evidence, document findings, route to provider
+disciplinary committee.
+Feedback loop — confirmed fraud cases feed back into the training set.
+M6 — Adjudication Decision Engine
+Purpose
+The orchestrator. Takes output from M2–M5 and decides the final outcome: approve, partial approve,
+deny, or pend for info.
+Decision logic
+Hard fails → automatic deny (e.g. member not eligible, service excluded).
+All clean + low complexity + low fraud risk → automatic approve.
+Clean but medium complexity OR moderate fraud signal → route to medical officer.
+Clean but pricing mismatch → auto-repricing with notification to provider, or pend if variance too
+large.
+Missing info → pend with specific request to provider (not a generic rejection).
+Features to build
+Rules engine — declarative, admin-editable routing rules (no code deploy to change logic).
+Auto-adjudication threshold controls — admin dials to tighten / loosen auto-approval boundaries
+per claim type, provider, amount.
+Explain-this-decision panel — every decision, human or AI, shows the full reason chain.
+Override workflow — supervisors can override with required written justification, logged to M10.
+Batch processing mode — for high-volume nightly runs.
+Page 8
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+Output
+A final AdjudicationDecision: outcome, approved amount, denied lines with reason codes, notes to
+provider, and audit record linking to every upstream signal.
+Page 9
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+M7 — EOB & Payment Processing
+Purpose
+Generate the documents that go back to the provider and to the member, and queue approved amounts
+into the payer's payment system.
+Features to build
+EOB generator — bilingual (Arabic / English) explanation of benefits with approved amount,
+member responsibility, denial reasons if any.
+Denial letter generator — standardized templates per denial reason, with appeal instructions.
+Payment batching — groups approved claims by provider and cycle, exports to payer accounting
+system (CSV / API).
+Payment status tracking — linked back to each claim so the clinic portal can show real-time status.
+Remittance advice (RA) — delivered to providers showing which claims were paid in each batch.
+Reconciliation helper — flags any mismatch between adjudicated amounts and actual payments
+released.
+M8 — Appeals Management
+Purpose
+Handle provider (and eventually member) disputes of denial decisions. Appeals are regulatorily mandated
+and a major source of administrative cost at every payer.
+Features to build
+Appeal intake form — provider submits with corrected info, supporting documentation, and
+narrative.
+Original decision context — reviewer sees the original claim, the denial reason, and the appeal
+side by side.
+AI pre-triage — classifies appeal as administrative fix (typo, missing doc, resubmission) vs medical
+dispute vs policy dispute, each with different routing.
+SLA tracker — regulatory deadlines vary by jurisdiction (e.g. 30 / 60 / 90 days); system alerts before
+breach.
+Outcome recording — upheld / partially overturned / fully overturned with reason; feeds into M9
+analytics.
+Appeal pattern detection — if one provider wins most appeals, that is a signal that the original
+denial logic needs revisiting.
+M9 — Analytics & Reporting
+Purpose
+Give every persona the dashboard they need to operate their function, and give regulators the reports they
+mandate.
+Dashboards to build
+Ops dashboard — claims in pipeline by stage, SLA adherence, reviewer productivity.
+Medical dashboard — top denial reasons, guideline adherence trends, high-cost cases.
+Fraud dashboard — provider risk heatmap, new cases, recovered amounts.
+Page 10
+ClaimRidge — Payer Adjudication Platform — Technical Spec
+Finance dashboard — approved vs paid, reserves, payment cycle performance.
+Executive view — loss ratio, admin cost per claim, auto-adjudication rate, appeals overturn rate.
+Regulator report generator — pre-built exports matching ministry / central bank report formats.
+M10 — Audit Trail & Compliance
+Purpose
+Every access, every decision, every override, every AI recommendation is logged immutably. This is table
+stakes for an insurance system and non-negotiable under Jordan's PDPL (Law No. 24 of 2023).
+Features to build
+Append-only event log — writes only; no updates, no deletes. Hash-chained for tamper evidence.
+PII access logs — any time a user views patient-identifying data, record who / when / what / why.
+AI inference log — model version, prompt, input, output, confidence score — for every decision the
+AI participated in.
+Data retention and deletion — per-record retention schedule, supports PDPL right-to-erasure
+where applicable.
+Regulator-facing audit export — one-click generation of audit reports for HCAC, CCHI, or
+equivalent inspections
