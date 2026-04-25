@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Inter, Syne, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
-import Footer from "@/components/Footer";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -42,11 +41,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${syne.variable} ${playfair.variable}`}>
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${syne.variable} ${playfair.variable}`}>
       <body className="antialiased min-h-screen flex flex-col bg-white text-[#0a0a0a]">
         <Navbar />
         <main className="flex-1 flex flex-col">{children}</main>
-        <Footer />
       </body>
     </html>
   );

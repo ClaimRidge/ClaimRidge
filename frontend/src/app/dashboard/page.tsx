@@ -23,6 +23,7 @@ import {
   Download,
   Eye,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 function StatCard({
   label,
@@ -129,11 +130,30 @@ export default function DashboardPage() {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
+  const router = useRouter();
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const supabase = createClient();
 
   useEffect(() => {
-    const fetchClaims = async () => {
+    const checkUserAndFetchClaims = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      // Check if profile exists and has account_type
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("account_type")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (!profile?.account_type) {
+        router.push("/onboarding");
+        return;
+      }
+
       const { data, error } = await supabase
         .from("claims")
         .select("*")
@@ -145,7 +165,7 @@ export default function DashboardPage() {
       setLoading(false);
     };
 
-    fetchClaims();
+    checkUserAndFetchClaims();
   }, []);
 
   const filteredClaims =
@@ -228,18 +248,16 @@ export default function DashboardPage() {
             <button
               key={tab.key}
               onClick={() => setActiveFilter(tab.key)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
-                activeFilter === tab.key
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${activeFilter === tab.key
                   ? "bg-[#16a34a] text-white"
                   : "text-[#6b7280] hover:bg-[#f3f4f6]"
-              }`}
+                }`}
             >
               {tab.label}
               {count > 0 && (
                 <span
-                  className={`ml-1.5 text-xs ${
-                    activeFilter === tab.key ? "text-white/80" : "text-[#9ca3af]"
-                  }`}
+                  className={`ml-1.5 text-xs ${activeFilter === tab.key ? "text-white/80" : "text-[#9ca3af]"
+                    }`}
                 >
                   ({count})
                 </span>

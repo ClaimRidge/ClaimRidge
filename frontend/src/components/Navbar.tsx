@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { User } from "@supabase/supabase-js";
@@ -13,22 +13,28 @@ export default function Navbar() {
   const [loading, setLoading] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const router = useRouter();
+  const pathname = usePathname();
   const supabase = createClient();
 
   useEffect(() => {
-    const getUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
+    const fetchUser = async () => {
+      const { data } = await supabase.auth.getUser();
+      setUser(data.user);
       setLoading(false);
     };
-    getUser();
+    fetchUser();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [supabase]);
+
+  // Show Navbar ONLY on the home page and dashboard page
+  if (pathname !== "/dashboard" && pathname !== "/") {
+    return null;
+  }
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -83,10 +89,6 @@ export default function Navbar() {
               </>
             ) : !loading ? (
               <>
-                <span className="hidden sm:flex items-center gap-1.5 text-xs text-[#9ca3af]">
-                  <Stethoscope className="h-3.5 w-3.5" />
-                  Founded by a Physician
-                </span>
                 <Link
                   href="/login"
                   className="text-sm font-medium text-[#374151] hover:text-[#0a0a0a] transition-colors"

@@ -202,20 +202,33 @@ export default function ResultsPage() {
 
   useEffect(() => {
     const fetchClaim = async () => {
-      const { data, error } = await supabase
-        .from("claims")
-        .select("*")
-        .eq("id", params.id)
-        .single();
+      try {
+        const { data, error: supabaseError } = await supabase
+          .from("claims")
+          .select("*")
+          .eq("id", params.id)
+          .single();
 
-      if (error || !data) {
-        setError("Claim not found");
+        if (supabaseError) {
+          console.error("Supabase error fetching claim:", supabaseError);
+          setError(`Database error: ${supabaseError.message}`);
+          setLoading(false);
+          return;
+        }
+
+        if (!data) {
+          setError("Claim record not found in database.");
+          setLoading(false);
+          return;
+        }
+
+        setClaim(data as Claim);
+      } catch (err) {
+        console.error("Unexpected error:", err);
+        setError("An unexpected error occurred while loading the claim.");
+      } finally {
         setLoading(false);
-        return;
       }
-
-      setClaim(data as Claim);
-      setLoading(false);
     };
 
     fetchClaim();

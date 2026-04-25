@@ -1,11 +1,13 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
+import uuid
+import datetime
 import json
 import time
 import random
 import string
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
 from core.security import get_current_user
 from core.database import supabase
 
@@ -23,6 +25,7 @@ class ExtractRequest(BaseModel):
 class ClaimFormData(BaseModel):
     patient_name: str
     patient_id: str
+    member_id: Optional[str] = None
     date_of_service: str
     provider_name: str
     provider_id: str
@@ -63,87 +66,95 @@ async def scrub_claim_endpoint(claim_data: ClaimFormData, current_user = Depends
     user_id = current_user.id
     logger.info(f"Scrub claim request from user {user_id}, patient: {claim_data.patient_name}")
     
-    # 1. Save Initial Draft Claim to DB
-    claim_payload = claim_data.model_dump()
+    # 1. Resolve Entities (Payer/Provider)
+    payer_id = None
+    provider_id = None
+
+    try:
+        # Search for existing insurer
+        payer_search = supabase.table("directory_entities") \
+            .select("id") \
+            .eq("entity_type", "insurer") \
+            .ilike("name_en", claim_data.payer_name) \
+            .execute()
+        if payer_search.data:
+            payer_id = payer_search.data[0]["id"]
+            
+        # Search for existing provider
+        provider_search = supabase.table("directory_entities") \
+            .select("id") \
+            .eq("entity_type", "clinic") \
+            .ilike("name_en", claim_data.provider_name) \
+            .execute()
+        if provider_search.data:
+            provider_id = provider_search.data[0]["id"]
+    except Exception as e:
+        logger.warning(f"Lookup failed, proceeding with raw names: {e}")
+
+    # 2. Build the Payload
+    # We manually map fields to ensure they match your SQL schema exactly
     claim_number = generate_claim_number()
-    claim_payload.update({
+    claim_payload = {
+        "id": str(uuid.uuid4()), # Explicitly generate ID to use for updates later
+        "claim_number": claim_number,
+        "status": "intake_complete",
         "user_id": user_id,
         "clinic_id": user_id,
-        "status": "pending",
-        "claim_number": claim_number
-    })
+        "provider_id": provider_id, # Now allowed to be None by SQL update
+        "payer_id": payer_id,       # Now allowed to be None by SQL update
+        
+        # Patient & Member Info
+        "patient_name": claim_data.patient_name,
+        "member_id": claim_data.member_id or claim_data.patient_id, 
+        "date_of_service": claim_data.date_of_service or str(datetime.date.today()),
+        
+        # Raw Data (for non-directory entities)
+        "payer_name": claim_data.payer_name,
+        "provider_name": claim_data.provider_name,
+        
+        # Medical Info
+        "diagnosis_codes": claim_data.diagnosis_codes,
+        "procedure_codes": claim_data.procedure_codes,
+        "total_billed": claim_data.billed_amount or 0,
+        "currency": "JOD"
+    }
     
-    logger.debug(f"Saving draft claim {claim_number} to database")
+    logger.debug(f"Inserting claim {claim_number} into Supabase")
     insert_res = supabase.table("claims").insert(claim_payload).execute()
+    
     if not insert_res.data:
-        logger.error("Failed to save draft claim to database")
-        raise HTTPException(status_code=500, detail="Failed to save claim")
+        raise HTTPException(status_code=500, detail="Failed to save claim to database")
     
     claim_id = insert_res.data[0]["id"]
-    logger.info(f"Draft claim saved with ID: {claim_id}, claim number: {claim_number}")
-    
-    # 2. Process via AI Service
+
+    # 3. Process via AI Service
     try:
-        logger.debug(f"Starting AI scrub for claim {claim_id}")
-        # Calls the updated scrub function and passes the dictionary directly
         scrub_result = await scrub_claim(claim_data.model_dump())
-        logger.info(f"AI scrub completed for claim {claim_id}, status: {scrub_result.get('status')}, score: {scrub_result.get('overall_score')}")
     except Exception as e:
-        logger.error(f"AI scrub failed for claim {claim_id}: {str(e)}")
-        scrub_result = {
-            "status": "warnings", 
-            "overall_score": 70, 
-            "issues": [{
-                "field": "general", 
-                "severity": "warning", 
-                "message": f"AI scrubbing completed but response parsing failed. Error: {str(e)}", 
-                "suggestion": "Please review the claim manually or try re-scrubbing."
-            }],
-            "corrected_claim": claim_data.model_dump(),
-            "recommendations": ["Manual review recommended due to processing irregularity."]
-        }
+        logger.error(f"AI scrub failed: {e}")
+        scrub_result = {"status": "error", "issues": [{"message": str(e)}]}
     
-    # 3. Update the Claim with Scrub Results
-    logger.debug(f"Updating claim {claim_id} with scrub results")
+    # 4. Update with Results
     supabase.table("claims").update({
         "status": "submitted",
         "scrub_result": scrub_result,
-        "scrub_passed": scrub_result.get("status") == "clean",
-        "scrub_warnings": len(scrub_result.get("issues", []))
+        "ai_risk_score": scrub_result.get("overall_score", 0)
     }).eq("id", claim_id).execute()
-    logger.info(f"Claim {claim_id} marked as submitted")
 
-    # 4. Trigger Internal Auto-Adjudicate
-    logger.debug(f"Triggering auto-adjudication for claim {claim_id}")
-    from routers.insurer import run_auto_adjudicate
-    await run_auto_adjudicate(claim_id, user_id)
-    
-    # 5. Insert Audit Trail
-    claim_reference = f"CR-{claim_id[:8].upper()}"
-    audit_payload = {
-        "user_id": user_id,
-        "claim_reference_number": claim_reference,
-        "patient_name": claim_data.patient_name,
-        "date_of_service": claim_data.date_of_service or None,
-        "provider_name": claim_data.provider_name,
-        "payer_name": claim_data.payer_name,
-        "diagnosis_codes": [c for c in claim_data.diagnosis_codes if c],
-        "procedure_codes": [c for c in claim_data.procedure_codes if c],
-        "billed_amount": claim_data.billed_amount,
-        "ai_flags": scrub_result.get("issues", []),
-        "ai_corrections": scrub_result.get("corrected_claim", {}),
-        "export_count": 0,
-    }
-    
+    # 5. Audit Log (Simplified for stability)
     try:
-        logger.debug(f"Creating audit trail for claim {claim_reference}")
+        audit_payload = {
+            "user_id": user_id,
+            "claim_reference_number": f"CR-{claim_number}",
+            "patient_name": claim_data.patient_name,
+            "payer_name": claim_data.payer_name,
+            "billed_amount": claim_data.billed_amount
+        }
         supabase.table("claims_audit").insert(audit_payload).execute()
-        logger.info(f"Audit trail created for claim {claim_reference}")
     except Exception as e:
-        logger.error(f"Failed to create audit trail for claim {claim_reference}: {e}")
+        logger.error(f"Audit failed: {e}")
     
-    logger.info(f"Claim scrubbing process completed for {claim_id}")
-    return {"id": claim_id, **scrub_result}
+    return {"id": claim_id, "claim_number": claim_number, **scrub_result}
 
 @router.post("/{id}/track-export")
 async def track_export(id: str, current_user = Depends(get_current_user)):
