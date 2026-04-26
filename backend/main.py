@@ -9,7 +9,7 @@ app = FastAPI(title="ClaimRidge API")
 # Configure CORS so the Next.js frontend can communicate with FastAPI
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Update this for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
