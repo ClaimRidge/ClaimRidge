@@ -134,6 +134,32 @@ Score thresholds for status:
 - Do NOT inflate scores to be nice. Real claims scrubbers reject ~20-30% of claims.
 - The corrected_claim must have the same field structure as the input."""
 
+MEDICAL_REVIEW_PROMPT = """You are ClaimRidge AI, acting as a Chief Medical Officer and Claims Adjudicator for a health insurance company in the MENA region.
+Your task is to review a medical claim specifically for 'Medical Necessity' and 'Clinical Appropriateness' based on standard global clinical guidelines (WHO, NICE, AHA) and local GCC/Levant practices.
+
+## Your Goal
+Read the diagnosis codes (ICD-10) and procedure codes (CPT). Determine if the requested procedures are a logical, medically necessary, and standard-of-care treatment or diagnostic step for the given diagnoses.
+
+## Red Flags to Watch For
+1. Upcoding: Using a highly complex/expensive procedure code when a simpler one is standard (e.g., billing a Level 5 ER visit for a common cold).
+2. Unbundling: Billing separately for procedures that should be grouped together.
+3. Diagnostic Mismatch: Ordering procedures entirely unrelated to the diagnosis (e.g., a knee MRI for a sinus infection).
+4. Step-Therapy Violations: Jumping straight to surgery or expensive imaging (MRI) without evidence of prior conservative treatment (X-ray, physical therapy, medication) where guidelines require it.
+
+## Output Format
+You MUST output a brief, highly professional medical report in Markdown format.
+Use EXACTLY this structure:
+
+### Clinical Decision Recommendation
+**[ APPROVE ]** OR **[ DENY ]** OR **[ INVESTIGATE FURTHER ]**
+
+### Clinical Reasoning
+[Provide 1-2 concise paragraphs explaining your medical rationale. Why is this medically necessary or unnecessary? Point out specific mismatches between the ICD-10 and CPT codes if they exist.]
+
+### Guideline Context
+[Briefly mention standard medical protocols that support your reasoning. e.g., "According to standard radiological guidelines, an MRI of the lumbar spine is not indicated as a first-line diagnostic tool for acute lower back pain without neurological deficits..."]
+"""
+
 def get_llm(model_name: str = Config.LLM_MODEL):
     """Returns Groq for main LLM tasks, and OpenRouter for OCR/Vision tasks."""
     if model_name == Config.OCR_MODEL:
@@ -232,3 +258,51 @@ async def scrub_claim(claim_data: dict) -> dict:
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse scrub JSON for patient {patient_name}: {str(e)}")
         raise ValueError(f"AI returned invalid JSON during scrubbing. Raw output: {json_str}") from e
+
+async def generate_medical_recommendation(claim_data: dict) -> str:
+    """
+    Analyzes claim codes against clinical guidelines to generate a medical necessity recommendation.
+    """
+    diagnoses = ", ".join(claim_data.get("diagnosis_codes", []))
+    procedures = ", ".join(claim_data.get("procedure_codes", []))
+    patient_name = claim_data.get('patient_name', 'Unknown')
+    amount = claim_data.get('billed_amount', claim_data.get('total_billed', '0'))
+    
+    logger.info(f"Starting medical review for patient: {patient_name}")
+
+    if isinstance(diagnoses, list):
+        diagnoses = ", ".join([str(d) for d in diagnoses if d])
+    if isinstance(procedures, list):
+        procedures = ", ".join([str(p) for p in procedures if p])
+
+    prompt = f"""
+    You are an expert Chief Medical Officer and Claims Adjudicator for a health insurance company.
+    Your task is to review the following medical claim for 'Medical Necessity' based on standard clinical guidelines (WHO, NICE, AHA, etc.).
+    
+    CLAIM DETAILS:
+    - Patient Name: {patient_name}
+    - Diagnosis Codes (ICD-10): {diagnoses}
+    - Procedure Codes (CPT): {procedures}
+    - Billed Amount: {amount}
+    
+    Please provide a concise, structured recommendation for the human Medical Officer reviewing this claim. 
+    Format your response EXACTLY like this:
+
+    **RECOMMENDATION:** [Approve / Deny / Investigate Further]
+    
+    **CLINICAL REASONING:** [1-2 paragraphs explaining if the procedures are clinically appropriate and medically necessary for the given diagnoses. Highlight any red flags, such as upcoding or unbundling.]
+    
+    **GUIDELINE CONTEXT:** [Mention any standard medical guidelines or protocols that support this reasoning.]
+    """
+    
+    llm = get_llm()
+    messages = [
+        SystemMessage(content=MEDICAL_REVIEW_PROMPT),
+        HumanMessage(content=prompt)
+    ]
+    try:
+        response = await llm.ainvoke(messages)
+        return str(response.content)
+    except Exception as e:
+        logger.error(f"Failed to generate medical necessity recommendation for patient {patient_name}: {str(e)}")
+        raise ValueError(f"Failed to generate medical necessity recommendation for patient {patient_name}") from e

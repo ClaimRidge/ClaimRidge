@@ -29,9 +29,9 @@ export const metadata: Metadata = {
   description:
     "AI-powered compliance layer that ensures medical claims meet each payer's exact requirements before submission, reducing denials for providers and review costs for insurers.",
   icons: {
-    icon: "/claim-logo.svg",
-    shortcut: "/claim-logo.svg",
-    apple: "/claim-logo.svg",
+    icon: "/logo-claim-ridge.svg",
+    shortcut: "/logo-claim-ridge.svg",
+    apple: "/logo-claim-ridge.svg",
   },
 };
 

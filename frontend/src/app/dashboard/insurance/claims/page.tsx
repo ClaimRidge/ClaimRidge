@@ -71,7 +71,7 @@ export default function InsurerClaimsPage() {
       .from("claims")
       .select("*")
       .eq("payer_id", session.user.id)
-      .order("ai_risk_score", { ascending: false, nullsFirst: false });
+      .order("created_at", { ascending: false });
 
     if (data) {
       const mappedClaims: InsurerClaim[] = data.map((c: any) => ({

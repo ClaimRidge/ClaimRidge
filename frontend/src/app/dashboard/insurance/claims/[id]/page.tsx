@@ -22,6 +22,7 @@ import {
   Hash,
   Clock,
   Paperclip,
+  Brain,
 } from "lucide-react";
 
 function DetailRow({ label, value, icon: Icon }: { label: string; value: string; icon: React.ElementType }) {
@@ -36,6 +37,64 @@ function DetailRow({ label, value, icon: Icon }: { label: string; value: string;
   );
 }
 
+function renderFormattedText(text: string) {
+  return text.split('\n').map((line, i) => {
+    if (!line.trim()) return null;
+
+    // Handle Headings
+    if (line.startsWith('### ')) {
+      return (
+        <h3 key={i} className="font-display font-bold text-[#0a0a0a] text-sm uppercase tracking-wide mt-5 mb-2 border-b border-[#bbf7d0] pb-1">
+          {line.replace('### ', '')}
+        </h3>
+      );
+    }
+    if (line.startsWith('## ')) {
+      return (
+        <h2 key={i} className="font-display font-bold text-[#0a0a0a] text-base mt-5 mb-2">
+          {line.replace('## ', '')}
+        </h2>
+      );
+    }
+    
+    // Handle Unordered Lists
+    if (line.trim().startsWith('- ')) {
+      const parts = line.replace('- ', '').split(/(\*\*.*?\*\*)/g);
+      return (
+        <div key={i} className="flex gap-2 mb-2 text-sm text-[#4b5563] leading-relaxed pl-2">
+          <span className="text-[#9ca3af]">•</span>
+          <div>
+            {parts.map((part, index) => {
+              if (part.startsWith('**') && part.endsWith('**')) {
+                return <strong key={index} className="font-semibold text-[#0a0a0a]">{part.slice(2, -2)}</strong>;
+              }
+              return <span key={index}>{part}</span>;
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // Process inline bold text
+    const parts = line.split(/(\*\*.*?\*\*)/g);
+    
+    return (
+      <p key={i} className="mb-3 text-sm text-[#4b5563] leading-relaxed">
+        {parts.map((part, index) => {
+          if (part.startsWith('**') && part.endsWith('**')) {
+            return (
+              <strong key={index} className="font-semibold text-[#0a0a0a]">
+                {part.slice(2, -2)}
+              </strong>
+            );
+          }
+          return <span key={index}>{part}</span>;
+        })}
+      </p>
+    );
+  });
+}
+
 export default function InsurerClaimDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -44,11 +103,33 @@ export default function InsurerClaimDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const supabase = createClient();
+  const [generatingAi, setGeneratingAi] = useState(false);
+
+  const handleGenerateRecommendation = async () => {
+    if (!claim) return;
+    setGeneratingAi(true);
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/claims/${claim.id}/analyze`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${session?.access_token}` }
+        });
+        
+        if (!res.ok) throw new Error("Failed to generate analysis");
+        
+        const data = await res.json();
+        setClaim({ ...claim, ai_recommendation: data.ai_recommendation });
+    } catch (err) {
+        console.error(err);
+    } finally {
+        setGeneratingAi(false);
+    }
+  };
 
   useEffect(() => {
     const fetchClaim = async () => {
       const { data: claimData, error: claimErr } = await supabase
-        .from("insurer_claims")
+        .from("claims")
         .select("*")
         .eq("id", params.id)
         .maybeSingle();
@@ -59,15 +140,58 @@ export default function InsurerClaimDetailPage() {
         return;
       }
 
-      setClaim(claimData as InsurerClaim);
+      const mappedClaim: InsurerClaim = {
+        id: claimData.id,
+        claim_number: claimData.claim_number,
+        clinic_id: claimData.clinic_id || null,
+        clinic_name: claimData.provider_name || 'Unknown Clinic',
+        insurer_id: claimData.payer_id,
+        patient_name: claimData.patient_name,
+        patient_national_id: claimData.patient_id,
+        patient_dob: null, 
+        patient_gender: null,
+        diagnosis_codes: claimData.diagnosis_codes || [],
+        diagnosis_description: null,
+        procedure_codes: claimData.procedure_codes || [],
+        procedure_description: claimData.notes || '',
+        service_date: claimData.date_of_service,
+        amount_jod: Number(claimData.total_billed),
+        status: (["submitted", "intake_complete"].includes(claimData.status) ? "pending" : claimData.status) as any,
+        submitted_at: claimData.created_at,
+        decided_at: claimData.status === 'approved' || claimData.status === 'rejected' ? claimData.updated_at : undefined,
+        decided_by: null,
+        decision_reason: claimData.notes || null,
+        ai_risk_score: claimData.ai_risk_score,
+        ai_recommendation: claimData.ai_recommendation || null,
+        created_at: claimData.created_at,
+        updated_at: claimData.updated_at || claimData.created_at,
+      };
+      
+      setClaim(mappedClaim);
 
-      const { data: flagData } = await supabase
-        .from("claim_flags")
-        .select("*")
-        .eq("claim_id", params.id)
-        .order("severity", { ascending: false });
+      // 3. Extract the AI flags directly from the JSON column!
+      let extractedFlags: ClaimFlag[] = [];
+      if (claimData.scrub_result && claimData.scrub_result.issues) {
+          extractedFlags = claimData.scrub_result.issues.map((issue: any, index: number) => {
+              // Map backend severity ("error", "warning", "info") to frontend ("high", "medium", "low")
+              let mappedSeverity: "high" | "medium" | "low" = "low";
+              if (issue.severity === "error") mappedSeverity = "high";
+              if (issue.severity === "warning") mappedSeverity = "medium";
 
-      setFlags((flagData as ClaimFlag[]) || []);
+              return {
+                  id: `flag-${index}`,
+                  claim_id: claimData.id,
+                  flag_type: "code_mismatch",
+                  severity: mappedSeverity,
+                  title: issue.field ? `Issue detected in: ${issue.field}` : "Claim Data Issue",
+                  explanation: issue.message || "Unknown issue detected.",
+                  evidence: issue.suggestion ? { suggested_fix: issue.suggestion } : null,
+                  created_at: claimData.created_at
+              };
+          });
+      }
+
+      setFlags(extractedFlags);
       setLoading(false);
     };
 
@@ -76,28 +200,40 @@ export default function InsurerClaimDetailPage() {
 
 const handleDecision = async (action: "approved" | "rejected" | "needs_info", reason: string) => {
     if (!claim) return;
-    const { data: { session } } = await supabase.auth.getSession();
-    const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/review-claim`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${session?.access_token}`
-      },
-      body: JSON.stringify({
-        claim_id: claim.id,
-        action,
-        reason,
-      }),
-    });
+    
+    try {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        // 1. Call our secure Python backend API
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/review-claim`, {
+            method: "POST",
+            headers: { 
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${session?.access_token}`
+            },
+            body: JSON.stringify({
+                claim_id: claim.id,
+                action: action,
+                reason: reason || claim.procedure_description
+            })
+        });
 
-    if (!res.ok) {
-      const data = await res.json();
-      setError(data.error || "Action failed");
-      return;
+        if (!res.ok) {
+            const errorData = await res.json();
+            throw new Error(errorData.detail || "Failed to update claim status");
+        }
+
+        // 2. Optimistically update the UI so the user sees the change instantly
+        setClaim({
+            ...claim,
+            status: action,
+            decision_reason: reason,
+            decided_at: new Date().toISOString()
+        });
+
+    } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to update claim status");
     }
-
-    const { claim: updated } = await res.json();
-    setClaim(updated as InsurerClaim);
   };
 
   if (loading) {
@@ -138,7 +274,7 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
         </button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="font-display text-xl sm:text-2xl font-bold text-[#0a0a0a]">
+            <h1 className="font-mono text-xl sm:text-2xl font-bold text-[#0a0a0a] tracking-tight">
               {claim.claim_number}
             </h1>
             <ClaimStatusPill status={claim.status} />
@@ -156,153 +292,134 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column — Claim Details (2/3) */}
+        {/* Left Column — Evidence & Details (2/3) */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Patient Information */}
+          {/* AI Clinical Recommendation Panel — HIGHEST PRIORITY */}
+          <div className="bg-gradient-to-br from-[#f0fdf4] to-white border border-[#bbf7d0] rounded-xl p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display font-bold text-[#0a0a0a] flex items-center gap-2 text-lg">
+                <Stethoscope className="h-5 w-5 text-[#16a34a]" />
+                AI Medical Necessity Review
+              </h2>
+            </div>
+            
+            {claim.ai_recommendation ? (
+              <div className="max-w-none">
+                {renderFormattedText(claim.ai_recommendation)}
+              </div>
+            ) : (
+              <div className="py-4 text-center">
+                <p className="text-sm text-[#6b7280] italic mb-4">
+                  No clinical review generated yet. Analyze the diagnosis and procedure codes against medical guidelines.
+                </p>
+                <Button 
+                  variant="outline"
+                  size="sm"
+                  onClick={handleGenerateRecommendation}
+                  loading={generatingAi}
+                  className="gap-2"
+                >
+                  <Brain className="h-4 w-4" />
+                  Generate Clinical Review
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Claim & Patient Overview */}
           <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm">
             <h2 className="font-display font-bold text-[#0a0a0a] mb-4 flex items-center gap-2">
               <User className="h-4 w-4 text-[#9ca3af]" />
-              Patient Information
+              Claim Overview
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1">
-              <DetailRow label="Patient Name" value={claim.patient_name} icon={User} />
-              <DetailRow
-                label="National ID"
-                value={maskNationalId(claim.patient_national_id)}
-                icon={Hash}
-              />
-              {claim.patient_dob && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-12 gap-y-4">
+              <div>
+                <DetailRow label="Patient Name" value={claim.patient_name} icon={User} />
                 <DetailRow
-                  label="Date of Birth"
-                  value={`${formatDateJO(claim.patient_dob)}${age !== null ? ` (${age} yrs)` : ""}`}
-                  icon={Calendar}
+                  label="National ID"
+                  value={maskNationalId(claim.patient_national_id)}
+                  icon={Hash}
                 />
-              )}
-              {claim.patient_gender && (
-                <DetailRow
-                  label="Gender"
-                  value={claim.patient_gender === "M" ? "Male" : "Female"}
-                  icon={User}
-                />
-              )}
+              </div>
+              <div>
+                <DetailRow label="Clinic / Provider" value={claim.clinic_name} icon={Building2} />
+                <DetailRow label="Service Date" value={formatDateJO(claim.service_date)} icon={Calendar} />
+              </div>
             </div>
           </div>
 
-          {/* Service Information */}
+          {/* Clinical Details (Codes) */}
           <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm">
-            <h2 className="font-display font-bold text-[#0a0a0a] mb-4 flex items-center gap-2">
-              <Stethoscope className="h-4 w-4 text-[#9ca3af]" />
-              Service Information
+            <h2 className="font-display font-bold text-[#0a0a0a] mb-6 flex items-center gap-2">
+              <FileText className="h-4 w-4 text-[#9ca3af]" />
+              Diagnosis & Procedures
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1 mb-4">
-              <DetailRow label="Service Date" value={formatDateJO(claim.service_date)} icon={Calendar} />
-              <DetailRow label="Submission Date" value={formatDateJO(claim.submitted_at)} icon={Clock} />
-              <DetailRow label="Clinic" value={claim.clinic_name} icon={Building2} />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t border-[#f3f4f6]">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div>
-                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Stethoscope className="h-3.5 w-3.5" /> Diagnosis Codes (ICD-10)
+                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-3 font-semibold">
+                  Diagnosis Codes (ICD-10)
                 </p>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-2 mb-3">
                   {claim.diagnosis_codes.map((code, i) => (
-                    <span key={i} className="px-2 py-1 bg-[#f3f4f6] rounded text-xs font-mono text-[#374151]">
+                    <span key={i} className="px-2.5 py-1 bg-blue-50 border border-blue-100 rounded text-xs font-mono text-blue-700">
                       {code}
                     </span>
                   ))}
                 </div>
                 {claim.diagnosis_description && (
-                  <p className="text-sm text-[#6b7280] mt-2">{claim.diagnosis_description}</p>
+                  <p className="text-sm text-[#4b5563] leading-relaxed">{claim.diagnosis_description}</p>
                 )}
               </div>
               <div>
-                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <FileText className="h-3.5 w-3.5" /> Procedure Codes (CPT)
+                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-3 font-semibold">
+                  Procedure Codes (CPT)
                 </p>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-2 mb-3">
                   {claim.procedure_codes.map((code, i) => (
-                    <span key={i} className="px-2 py-1 bg-[#f3f4f6] rounded text-xs font-mono text-[#374151]">
+                    <span key={i} className="px-2.5 py-1 bg-emerald-50 border border-emerald-100 rounded text-xs font-mono text-emerald-700">
                       {code}
                     </span>
                   ))}
                 </div>
                 {claim.procedure_description && (
-                  <p className="text-sm text-[#6b7280] mt-2">{claim.procedure_description}</p>
+                  <p className="text-sm text-[#4b5563] leading-relaxed">{claim.procedure_description}</p>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Financial Summary */}
-          <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm">
-            <h2 className="font-display font-bold text-[#0a0a0a] mb-4 flex items-center gap-2">
-              <DollarSign className="h-4 w-4 text-[#9ca3af]" />
-              Financial Summary
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-[#f9fafb] rounded-lg p-4 text-center border border-[#f3f4f6]">
-                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-1">Claimed Amount</p>
-                <p className="text-xl font-bold text-[#0a0a0a]">{formatJod(Number(claim.amount_jod))}</p>
-              </div>
-              <div className="bg-[#f9fafb] rounded-lg p-4 text-center border border-[#f3f4f6]">
-                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-1">Status</p>
-                <div className="mt-1"><ClaimStatusPill status={claim.status} /></div>
-              </div>
-              <div className="bg-[#f9fafb] rounded-lg p-4 text-center border border-[#f3f4f6]">
-                <p className="text-xs text-[#9ca3af] uppercase tracking-wider mb-1">AI Risk Score</p>
-                <p className={`text-xl font-bold ${
-                  (claim.ai_risk_score ?? 0) >= 71
-                    ? "text-red-600"
-                    : (claim.ai_risk_score ?? 0) >= 31
-                    ? "text-amber-600"
-                    : "text-[#16a34a]"
-                }`}>
-                  {claim.ai_risk_score ?? "N/A"}
-                </p>
-              </div>
-            </div>
+          {/* Supporting Documents (Mock) — Saved for next time 
+          <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm opacity-60">
+             ...
           </div>
-
-          {/* Supporting Documents (Mock) */}
-          <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm">
-            <h2 className="font-display font-bold text-[#0a0a0a] mb-4 flex items-center gap-2">
-              <Paperclip className="h-4 w-4 text-[#9ca3af]" />
-              Supporting Documents
-            </h2>
-            <div className="space-y-2">
-              {[
-                { name: "Medical Report.pdf", size: "245 KB" },
-                { name: "Lab Results.pdf", size: "128 KB" },
-                { name: "Prescription.pdf", size: "89 KB" },
-              ].map((doc, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between p-3 bg-[#f9fafb] rounded-lg border border-[#f3f4f6]"
-                >
-                  <div className="flex items-center gap-3">
-                    <FileText className="h-4 w-4 text-[#9ca3af]" />
-                    <div>
-                      <p className="text-sm font-medium text-[#0a0a0a]">{doc.name}</p>
-                      <p className="text-xs text-[#9ca3af]">{doc.size}</p>
-                    </div>
-                  </div>
-                  <button className="text-xs text-[#16a34a] hover:text-[#15803d] font-semibold">
-                    View
-                  </button>
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-[#9ca3af] mt-3 italic">
-              Document uploads will be available in a future update.
-            </p>
-          </div>
+          */}
         </div>
 
-        {/* Right Column — AI Analysis + Decision (1/3) */}
+        {/* Right Column — Decision & Risk Analysis (1/3) */}
         <div className="space-y-6">
-          <AiAnalysisPanel claim={claim} flags={flags} />
+          {/* Decision Actions */}
           <ClaimDecisionActions claim={claim} onDecision={handleDecision} />
+
+          {/* Risk Analysis Card */}
+          <AiAnalysisPanel claim={claim} flags={flags} />
+
+          {/* Financial Widget */}
+          <div className="bg-white border border-[#e5e7eb] rounded-xl p-5 shadow-sm">
+            <h3 className="text-sm font-semibold text-[#0a0a0a] mb-4 flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-[#9ca3af]" />
+              Financial Summary
+            </h3>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-[#6b7280]">Total Billed</span>
+                <span className="text-lg font-bold text-[#0a0a0a]">{formatJod(Number(claim.amount_jod))}</span>
+              </div>
+              <div className="pt-3 border-t border-[#f3f4f6] flex justify-between items-center">
+                <span className="text-xs text-[#9ca3af] uppercase tracking-widest font-medium">Claim ID</span>
+                <span className="text-xs font-mono text-[#6b7280]">{claim.id.slice(0, 8).toUpperCase()}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

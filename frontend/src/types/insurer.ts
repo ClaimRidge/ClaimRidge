@@ -30,7 +30,7 @@ export interface InsurerClaim {
   amount_jod: number;
   status: InsurerClaimStatus;
   ai_risk_score: number | null;
-  ai_recommendation: AiRecommendation | null;
+  ai_recommendation: string | null;
   decision_reason: string | null;
   decided_by: string | null;
   decided_at: string | null;

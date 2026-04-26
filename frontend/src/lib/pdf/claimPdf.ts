@@ -30,16 +30,16 @@ function renderLogoToDataUrl(): Promise<string> {
   return new Promise((resolve) => {
     const scale = 2;
     const canvas = document.createElement("canvas");
-    // Logo dimension is 1049x240
-    canvas.width = 1049 * scale;
-    canvas.height = 240 * scale;
+    // Logo dimension is 800x800
+    canvas.width = 800 * scale;
+    canvas.height = 800 * scale;
     const ctx = canvas.getContext("2d")!;
     const img = new Image();
     img.onload = () => {
-      ctx.drawImage(img, 0, 0, 1049 * scale, 240 * scale);
+      ctx.drawImage(img, 0, 0, 800 * scale, 800 * scale);
       resolve(canvas.toDataURL("image/png"));
     };
-    img.src = "/full-claim-logo.svg";
+    img.src = "/logo-claim-ridge.svg";
   });
 }
 
@@ -52,9 +52,9 @@ export async function generateClaimPdf(claim: Claim): Promise<void> {
 
   // -------- Header --------
   const logoDataUrl = await renderLogoToDataUrl();
-  // Logo dimensions from full-claim-logo.svg are 1049x240
-  const logoW = 55;
-  const logoH = logoW * (240 / 1049);
+  // Logo dimensions from logo-claim-ridge.svg are 800x800
+  const logoW = 12;
+  const logoH = 12;
   doc.addImage(logoDataUrl, "PNG", marginX, y - 2, logoW, logoH);
 
   doc.setFont("helvetica", "normal");

@@ -86,7 +86,7 @@ function RiskScoreBadge({ score }: { score?: number }) {
 
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${color}`}>
-      Risk: {score}%
+      {score}%
     </span>
   );
 }
@@ -172,7 +172,7 @@ export default function InsurerDashboardPage() {
 
   const actionClaims = useMemo(() => 
     claims.filter(c => c.status === "pending" || c.status === "under_review")
-          .sort((a, b) => new Date(a.submitted_at).getTime() - new Date(b.submitted_at).getTime())
+          .sort((a, b) => new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime())
           .slice(0, 10), 
   [claims]);
 

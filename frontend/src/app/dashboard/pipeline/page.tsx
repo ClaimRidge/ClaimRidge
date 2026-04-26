@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -10,16 +11,45 @@ import {
   Columns3,
 } from "lucide-react";
 import PipelineBoard from "@/components/pipeline/PipelineBoard";
-
-// Mock aggregated stats for the header bar
-const STATS = {
-  totalClaims: 47,
-  totalSubmitted: 284_600,
-  revenueSaved: 42_350,
-  denialRate: 8.2,
-};
+import { createClient } from "@/lib/supabase/client";
 
 export default function PipelinePage() {
+  const [claims, setClaims] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const supabase = createClient();
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const { data, error } = await supabase
+        .from("claims")
+        .select("*")
+        .eq("clinic_id", session.user.id);
+
+      if (!error && data) {
+        setClaims(data);
+      }
+      setLoading(false);
+    };
+
+    fetchStats();
+  }, [supabase]);
+
+  // Calculate real stats
+  const totalClaims = claims.length;
+  const totalBilled = claims.reduce((sum, c) => sum + (Number(c.total_billed) || 0), 0);
+  
+  // Logic for revenue saved (approximation: 10% of total billed if we don't have a direct field)
+  // Or just use 0 if we don't want to guess. The user said "lack data".
+  // Actually, let's just show Total Claims, Total Billed, and Denial Rate.
+  
+  const approvedCount = claims.filter(c => c.status === "approved").length;
+  const deniedCount = claims.filter(c => ["denied", "rejected"].includes(c.status)).length;
+  const decidedCount = approvedCount + deniedCount;
+  const denialRate = decidedCount > 0 ? Math.round((deniedCount / decidedCount) * 100) : 0;
+
   return (
     <div className="min-h-[calc(100vh-4rem)] flex flex-col">
       {/* Page header */}
@@ -51,29 +81,31 @@ export default function PipelinePage() {
           </div>
 
           {/* Stats bar */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <StatPill
-              icon={FileText}
-              label="Claims This Month"
-              value={STATS.totalClaims.toString()}
-            />
-            <StatPill
-              icon={DollarSign}
-              label="Total Submitted"
-              value={`$${STATS.totalSubmitted.toLocaleString()}`}
-            />
-            <StatPill
-              icon={Sparkles}
-              label="Revenue Saved by AI"
-              value={`$${STATS.revenueSaved.toLocaleString()}`}
-              highlight
-            />
-            <StatPill
-              icon={TrendingDown}
-              label="Denial Rate"
-              value={`${STATS.denialRate}%`}
-            />
-          </div>
+          {!loading && claims.length > 0 && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <StatPill
+                icon={FileText}
+                label="Total Claims"
+                value={totalClaims.toString()}
+              />
+              <StatPill
+                icon={DollarSign}
+                label="Total Billed"
+                value={`${totalBilled.toLocaleString()} JOD`}
+              />
+              <StatPill
+                icon={Sparkles}
+                label="Approved"
+                value={approvedCount.toString()}
+                highlight
+              />
+              <StatPill
+                icon={TrendingDown}
+                label="Denial Rate"
+                value={`${denialRate}%`}
+              />
+            </div>
+          )}
         </div>
       </div>
 

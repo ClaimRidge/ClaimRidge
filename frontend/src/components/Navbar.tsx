@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { User } from "@supabase/supabase-js";
-import { Menu, X, LogOut, LayoutDashboard, FilePlus, Stethoscope, Settings } from "lucide-react";
+import { Menu, X, LogOut, LayoutDashboard, FilePlus, Stethoscope, Settings, Columns3 } from "lucide-react";
 import ClaimRidgeLogo from "@/components/ClaimRidgeLogo";
 
 export default function Navbar() {
@@ -63,10 +63,25 @@ export default function Navbar() {
               <>
                 <Link
                   href="/dashboard"
-                  className="flex items-center gap-1.5 text-sm text-[#374151] hover:text-[#16a34a] transition-colors"
+                  className={`flex items-center gap-1.5 text-sm transition-colors ${
+                    pathname === "/dashboard/provider" || pathname === "/dashboard" 
+                      ? "text-[#16a34a] font-semibold" 
+                      : "text-[#374151] hover:text-[#16a34a]"
+                  }`}
                 >
                   <LayoutDashboard className="h-4 w-4" />
-                  Dashboard
+                  Overview
+                </Link>
+                <Link
+                  href="/dashboard/pipeline"
+                  className={`flex items-center gap-1.5 text-sm transition-colors ${
+                    pathname.startsWith("/dashboard/pipeline") 
+                      ? "text-[#16a34a] font-semibold" 
+                      : "text-[#374151] hover:text-[#16a34a]"
+                  }`}
+                >
+                  <Columns3 className="h-4 w-4" />
+                  Pipeline
                 </Link>
                 <Link
                   href="/claims/new"
@@ -90,6 +105,7 @@ export default function Navbar() {
                     aria-label="Sign out"
                   >
                     <LogOut className="h-4 w-4" />
+                    <span className="hidden lg:inline">Sign Out</span>
                   </button>
                 </div>
               </>
@@ -129,11 +145,27 @@ export default function Navbar() {
             <>
               <Link
                 href="/dashboard"
-                className="flex items-center gap-2 py-2 text-[#374151] hover:text-[#16a34a]"
+                className={`flex items-center gap-2 py-2 transition-colors ${
+                  pathname === "/dashboard/provider" || pathname === "/dashboard" 
+                    ? "text-[#16a34a] font-semibold" 
+                    : "text-[#374151] hover:text-[#16a34a]"
+                }`}
                 onClick={() => setMobileOpen(false)}
               >
                 <LayoutDashboard className="h-4 w-4" />
-                Dashboard
+                Overview
+              </Link>
+              <Link
+                href="/dashboard/pipeline"
+                className={`flex items-center gap-2 py-2 transition-colors ${
+                  pathname.startsWith("/dashboard/pipeline") 
+                    ? "text-[#16a34a] font-semibold" 
+                    : "text-[#374151] hover:text-[#16a34a]"
+                }`}
+                onClick={() => setMobileOpen(false)}
+              >
+                <Columns3 className="h-4 w-4" />
+                Pipeline
               </Link>
               <Link
                 href="/claims/new"

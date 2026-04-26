@@ -18,20 +18,70 @@ import {
   Menu,
   X,
   Building2,
+  ChevronRight,
+  Bell,
+  CreditCard,
 } from "lucide-react";
 
-const NAV_ITEMS = [
-  { href: "/dashboard/insurance", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/insurance/claims", label: "Claims", icon: FileSearch },
-  { href: "/dashboard/insurance/policies", label: "Policies", icon: Scale },
-  { href: "/dashboard/insurance/providers", label: "Providers", icon: Users },
-  { href: "/dashboard/insurance/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/dashboard/insurance/fraud", label: "Fraud Detection", icon: ShieldAlert },
-  { href: "/dashboard/insurance/payments", label: "Payments", icon: Building2 },
-  { href: "/dashboard/insurance/appeals", label: "Appeals", icon: Scale },
-  { href: "/dashboard/insurance/audit", label: "Compliance", icon: ShieldAlert },
-  { href: "/dashboard/insurance/settings", label: "Settings", icon: Settings },
+const NAV_GROUPS = [
+  {
+    label: "Operations",
+    items: [
+      { href: "/dashboard/insurance", label: "Dashboard", icon: LayoutDashboard, exact: true },
+      { href: "/dashboard/insurance/claims", label: "Claims", icon: FileSearch },
+    ],
+  },
+  {
+    label: "Network",
+    items: [
+      { href: "/dashboard/insurance/providers", label: "Providers", icon: Users },
+      { href: "/dashboard/insurance/policies", label: "Policies", icon: Scale },
+      { href: "/dashboard/insurance/payments", label: "Payments", icon: CreditCard },
+    ],
+  },
+  {
+    label: "Intelligence",
+    items: [
+      { href: "/dashboard/insurance/analytics", label: "Analytics", icon: BarChart3 },
+      { href: "/dashboard/insurance/fraud", label: "Fraud Detection", icon: ShieldAlert },
+      { href: "/dashboard/insurance/appeals", label: "Appeals", icon: Scale },
+      { href: "/dashboard/insurance/audit", label: "Compliance", icon: ShieldAlert },
+    ],
+  },
 ];
+
+function NavItem({
+  href,
+  label,
+  icon: Icon,
+  exact,
+  pathname,
+  onClick,
+}: {
+  href: string;
+  label: string;
+  icon: React.ElementType;
+  exact?: boolean;
+  pathname: string;
+  onClick?: () => void;
+}) {
+  const isActive = exact ? pathname === href : pathname === href || pathname.startsWith(href + "/");
+  return (
+    <Link
+      href={href}
+      onClick={onClick}
+      className={`group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${
+        isActive
+          ? "bg-[#16a34a] text-white shadow-sm shadow-[#16a34a]/30"
+          : "text-white/50 hover:text-white hover:bg-white/8"
+      }`}
+    >
+      <Icon className={`h-4 w-4 flex-shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
+      <span className="flex-1 truncate">{label}</span>
+      {isActive && <ChevronRight className="h-3 w-3 text-white/60" />}
+    </Link>
+  );
+}
 
 export default function InsurerLayout({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -46,30 +96,18 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-
+      if (!user) { router.push("/login"); return; }
       setUser(user);
-
       const { data: profile } = await supabase
         .from("profiles")
         .select("organization_name, account_type")
         .eq("id", user.id)
         .maybeSingle();
-
-      if (profile?.account_type !== "insurance") {
-        router.push("/dashboard");
-        return;
-      }
-
+      if (profile?.account_type !== "insurance") { router.push("/dashboard"); return; }
       setCompanyName(profile.organization_name || "Insurance Partner");
       setAuthorized(true);
       setLoading(false);
     };
-
     checkAuth();
   }, []);
 
@@ -79,7 +117,7 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
     router.refresh();
   };
 
-  // Hide the main navbar and footer when insurer layout is active
+  // Hide root navbar/footer
   useEffect(() => {
     const nav = document.querySelector("body > nav, nav.sticky");
     const footer = document.querySelector("body > footer, footer");
@@ -100,115 +138,123 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
   if (loading || !authorized) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#f9fafb]">
-        <div className="animate-spin h-8 w-8 border-4 border-[#0A1628] border-t-transparent rounded-full" />
+        <div className="flex flex-col items-center gap-3">
+          <div className="animate-spin h-8 w-8 border-4 border-[#16a34a] border-t-transparent rounded-full" />
+          <p className="text-sm text-[#9ca3af] font-medium">Verifying access...</p>
+        </div>
       </div>
     );
   }
 
+  const initials = companyName
+    .split(" ")
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase();
+
   return (
-    <div className="min-h-screen bg-[#f9fafb] flex">
-      {/* Sidebar - Desktop */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-64 bg-[#0A1628] text-white">
-        <div className="p-5 border-b border-white/10">
+    <div className="min-h-screen bg-[#f4f6f9] flex">
+
+      {/* ─── Desktop Sidebar ─────────────────────────────── */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-60 xl:w-64 flex-shrink-0 bg-[#0A1628] relative">
+
+        {/* Logo */}
+        <div className="h-16 flex items-center px-5 border-b border-white/8">
           <Link href="/dashboard/insurance">
-            <ClaimRidgeLogo size={28} variant="dark" />
+            <ClaimRidgeLogo size={26} variant="dark" />
           </Link>
         </div>
 
-        <div className="px-4 py-3 border-b border-white/10">
-          <div className="flex items-center gap-2">
-            <Building2 className="h-4 w-4 text-[#16a34a]" />
-            <span className="text-sm font-medium text-white/90 truncate">{companyName}</span>
-          </div>
-          <p className="text-xs text-white/50 mt-0.5 truncate">{user?.email}</p>
-        </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV_ITEMS.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-white/10 text-white"
-                    : "text-white/60 hover:text-white hover:bg-white/5"
-                }`}
-              >
-                <item.icon className="h-4 w-4" />
-                {item.label}
-              </Link>
-            );
-          })}
+
+        {/* Navigation */}
+        <nav className="flex-1 px-3 py-2 space-y-5 overflow-y-auto">
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label}>
+              <p className="px-3 mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-white/25">
+                {group.label}
+              </p>
+              <div className="space-y-0.5">
+                {group.items.map((item) => (
+                  <NavItem
+                    key={item.href}
+                    {...item}
+                    pathname={pathname}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
         </nav>
 
-        <div className="p-4 border-t border-white/10">
+        {/* Bottom: Settings + Sign Out */}
+        <div className="px-3 py-3 border-t border-white/8 space-y-0.5">
+          <NavItem href="/dashboard/insurance/settings" label="Settings" icon={Settings} pathname={pathname} />
           <button
             onClick={handleSignOut}
-            className="flex items-center gap-2 text-sm text-white/60 hover:text-white transition-colors w-full"
+            className="w-full group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-red-400 hover:bg-red-500/10 transition-all duration-150"
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-4 w-4 flex-shrink-0 text-white/30 group-hover:text-red-400 transition-colors" />
             Sign Out
           </button>
         </div>
       </aside>
 
-      {/* Mobile Header */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-[#0A1628] text-white px-4 h-14 flex items-center justify-between">
-        <Link href="/dashboard/insurance/dashboard">
-          <ClaimRidgeLogo size={24} variant="dark" />
+      {/* ─── Mobile Header ───────────────────────────────── */}
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-[#0A1628] px-4 h-14 flex items-center justify-between">
+        <Link href="/dashboard/insurance">
+          <ClaimRidgeLogo size={22} variant="dark" />
         </Link>
-        <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1">
-          {sidebarOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+        <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1.5 text-white/70 hover:text-white">
+          {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
         </button>
       </div>
 
-      {/* Mobile Sidebar Overlay */}
+      {/* ─── Mobile Drawer ───────────────────────────────── */}
       {sidebarOpen && (
         <div className="lg:hidden fixed inset-0 z-40">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
-          <div className="absolute left-0 top-14 bottom-0 w-64 bg-[#0A1628] text-white p-4 space-y-1">
-            <div className="pb-3 mb-3 border-b border-white/10">
-              <div className="flex items-center gap-2">
-                <Building2 className="h-4 w-4 text-[#16a34a]" />
-                <span className="text-sm font-medium truncate">{companyName}</span>
-              </div>
-              <p className="text-xs text-white/50 mt-0.5 truncate">{user?.email}</p>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
+          <aside className="absolute left-0 top-14 bottom-0 w-64 bg-[#0A1628] flex flex-col">
+
+            <nav className="flex-1 px-3 py-2 space-y-5 overflow-y-auto">
+              {NAV_GROUPS.map((group) => (
+                <div key={group.label}>
+                  <p className="px-3 mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-white/25">
+                    {group.label}
+                  </p>
+                  <div className="space-y-0.5">
+                    {group.items.map((item) => (
+                      <NavItem key={item.href} {...item} pathname={pathname} onClick={() => setSidebarOpen(false)} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </nav>
+            <div className="px-3 py-3 border-t border-white/8 space-y-0.5">
+              <NavItem href="/dashboard/insurance/settings" label="Settings" icon={Settings} pathname={pathname} onClick={() => setSidebarOpen(false)} />
+              <button
+                onClick={handleSignOut}
+                className="w-full group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-red-400 hover:bg-red-500/10 transition-all duration-150"
+              >
+                <LogOut className="h-4 w-4 text-white/30 group-hover:text-red-400" />
+                Sign Out
+              </button>
             </div>
-            {NAV_ITEMS.map((item) => {
-              const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setSidebarOpen(false)}
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                    isActive
-                      ? "bg-white/10 text-white"
-                      : "text-white/60 hover:text-white hover:bg-white/5"
-                  }`}
-                >
-                  <item.icon className="h-4 w-4" />
-                  {item.label}
-                </Link>
-              );
-            })}
-            <button
-              onClick={handleSignOut}
-              className="flex items-center gap-2 text-sm text-white/60 hover:text-white transition-colors w-full px-3 py-2.5 mt-4"
-            >
-              <LogOut className="h-4 w-4" />
-              Sign Out
-            </button>
-          </div>
+          </aside>
         </div>
       )}
 
-      {/* Main content */}
-      <main className="flex-1 lg:overflow-y-auto pt-14 lg:pt-0">
-        {children}
-      </main>
+      {/* ─── Main Content ─────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+
+
+        {/* Page content */}
+        <main className="flex-1 overflow-y-auto pt-14 lg:pt-0">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

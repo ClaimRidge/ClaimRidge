@@ -15,7 +15,6 @@ import {
   Clock,
   FileText,
   TrendingUp,
-  ArrowRight,
   DollarSign,
   ShieldAlert,
   Send,
@@ -64,12 +63,17 @@ function StatCard({
   );
 }
 
+// FIX 1: Add the backend statuses (rejected, needs_info, etc.) so they have proper badges
 const STATUS_CONFIG: Record<string, { label: string; class: string; icon: React.ElementType }> = {
   draft: { label: "Draft", class: "bg-[#f9fafb] text-[#6b7280] border-[#e5e7eb]", icon: Clock },
+  intake_complete: { label: "Submitted", class: "bg-blue-50 text-blue-600 border-blue-200", icon: Send },
   submitted: { label: "Submitted", class: "bg-blue-50 text-blue-600 border-blue-200", icon: Send },
   pending: { label: "Pending", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
+  under_review: { label: "Under Review", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
+  needs_info: { label: "clarification", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
   approved: { label: "Approved", class: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]", icon: CheckCircle },
   denied: { label: "Denied", class: "bg-red-50 text-red-600 border-red-200", icon: XCircle },
+  rejected: { label: "Rejected", class: "bg-red-50 text-red-600 border-red-200", icon: XCircle },
   appealing: { label: "Appealing", class: "bg-orange-50 text-orange-600 border-orange-200", icon: Gavel },
 };
 
@@ -115,9 +119,7 @@ function formatDateDMY(dateStr: string): string {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-type FilterTab = "all" | ClaimStatus;
-
-const FILTER_TABS: { key: FilterTab; label: string }[] = [
+const FILTER_TABS: { key: string; label: string }[] = [
   { key: "all", label: "All" },
   { key: "submitted", label: "Submitted" },
   { key: "pending", label: "Pending" },
@@ -129,7 +131,7 @@ const FILTER_TABS: { key: FilterTab; label: string }[] = [
 export default function DashboardPage() {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
+  const [activeFilter, setActiveFilter] = useState<string>("all");
   const router = useRouter();
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const supabase = createClient();
@@ -142,7 +144,6 @@ export default function DashboardPage() {
         return;
       }
 
-      // Check if profile exists and has account_type
       const { data: profile } = await supabase
         .from("profiles")
         .select("account_type")
@@ -168,17 +169,27 @@ export default function DashboardPage() {
     checkUserAndFetchClaims();
   }, []);
 
-  const filteredClaims =
-    activeFilter === "all" ? claims : claims.filter((c) => c.status === activeFilter);
+  // FIX 2: Group backend statuses into the visual UI tabs
+  const checkTabMatch = (claimStatus: string, tab: string) => {
+    if (tab === "all") return true;
+    if (tab === "submitted") return ["submitted", "intake_complete"].includes(claimStatus);
+    if (tab === "pending") return ["pending", "under_review", "needs_info"].includes(claimStatus);
+    if (tab === "approved") return claimStatus === "approved";
+    if (tab === "denied") return ["denied", "rejected"].includes(claimStatus);
+    if (tab === "appealing") return claimStatus === "appealing";
+    return false;
+  };
 
-  // Stats
+  const filteredClaims = claims.filter((c) => checkTabMatch(c.status, activeFilter));
+
+  // FIX 3: Update stat math to include "rejected" as denied
   const totalClaims = claims.length;
   const totalBilled = claims.reduce((sum, c) => sum + (c.billed_amount || 0), 0);
   const approvedClaims = claims.filter((c) => c.status === "approved").length;
-  const decidedClaims = claims.filter((c) => c.status === "approved" || c.status === "denied").length;
+  const decidedClaims = claims.filter((c) => ["approved", "denied", "rejected"].includes(c.status)).length;
   const approvalRate = decidedClaims > 0 ? Math.round((approvedClaims / decidedClaims) * 100) : 0;
   const deniedAmount = claims
-    .filter((c) => c.status === "denied")
+    .filter((c) => ["denied", "rejected"].includes(c.status))
     .reduce((sum, c) => sum + (c.billed_amount || 0), 0);
 
   const handleDownloadPdf = async (claim: Claim) => {
@@ -194,7 +205,6 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
         <div className="flex items-center gap-3">
           <div className="inline-flex items-center justify-center w-10 h-10 bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg">
@@ -213,7 +223,6 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard label="Total Claims" value={totalClaims} icon={FileText} color="blue" />
         <StatCard
@@ -239,11 +248,9 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Filter Tabs */}
       <div className="flex items-center gap-1 mb-4 overflow-x-auto pb-1">
         {FILTER_TABS.map((tab) => {
-          const count =
-            tab.key === "all" ? claims.length : claims.filter((c) => c.status === tab.key).length;
+          const count = claims.filter((c) => checkTabMatch(c.status, tab.key)).length;
           return (
             <button
               key={tab.key}
@@ -267,7 +274,6 @@ export default function DashboardPage() {
         })}
       </div>
 
-      {/* Claims Table */}
       <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm overflow-hidden">
         <div className="px-4 sm:px-6 py-4 border-b border-[#f3f4f6] flex items-center justify-between">
           <h2 className="font-display font-bold text-[#0a0a0a] text-sm sm:text-base">
@@ -287,7 +293,7 @@ export default function DashboardPage() {
           <div className="p-12 text-center">
             <FileText className="h-12 w-12 text-[#d1d5db] mx-auto mb-4" />
             <h3 className="font-display font-bold text-[#0a0a0a] mb-1">
-              {activeFilter === "all" ? "No claims yet" : `No ${STATUS_CONFIG[activeFilter]?.label?.toLowerCase() || activeFilter} claims`}
+              {activeFilter === "all" ? "No claims yet" : `No ${activeFilter} claims`}
             </h3>
             <p className="text-[#9ca3af] text-sm mb-4">
               {activeFilter === "all"
@@ -355,7 +361,8 @@ export default function DashboardPage() {
                           <Download className="h-3.5 w-3.5" />
                           PDF
                         </button>
-                        {claim.status === "denied" && (
+                        {/* FIX 4: Add rejected to the condition that shows the Appeal button */}
+                        {["denied", "rejected"].includes(claim.status) && (
                           <span className="inline-flex items-center gap-1 text-sm text-orange-600 font-semibold cursor-pointer hover:text-orange-700">
                             <Gavel className="h-3.5 w-3.5" />
                             Appeal
