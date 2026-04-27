@@ -25,12 +25,15 @@ export default function SettingsPage() {
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
 
+  const [accountType, setAccountType] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     organizationName: "",
     organizationNameAr: "",
     licenseNumber: "",
     contactEmail: "",
-    address: ""
+    address: "",
+    policyFileBase64: "",
+    policyFileName: ""
   });
 
   const supabase = createClient();
@@ -51,12 +54,15 @@ export default function SettingsPage() {
         .maybeSingle();
       
       if (profile) {
+        setAccountType(profile.account_type);
         setFormData({
           organizationName: profile.organization_name || "",
           organizationNameAr: profile.config_json?.organization_name_ar || "",
           licenseNumber: profile.license_number || "",
           contactEmail: profile.contact_email || "",
-          address: profile.config_json?.address || ""
+          address: profile.config_json?.address || "",
+          policyFileBase64: "",
+          policyFileName: profile.config_json?.policy_file_name || ""
         });
       }
       setLoading(false);
@@ -80,24 +86,46 @@ export default function SettingsPage() {
         .eq("id", user.id)
         .maybeSingle();
 
-      const updatedConfig = {
+      const updatedConfig: any = {
         ...(existingProfile?.config_json || {}),
         organization_name_ar: formData.organizationNameAr,
         address: formData.address
       };
 
+      if (accountType === "insurance" && formData.policyFileBase64) {
+        updatedConfig.policy_file_base64 = formData.policyFileBase64;
+        updatedConfig.policy_file_name = formData.policyFileName;
+      }
+
+      const updateData: any = {
+        organization_name: formData.organizationName,
+        license_number: formData.licenseNumber,
+        contact_email: formData.contactEmail,
+        config_json: updatedConfig,
+        updated_at: new Date().toISOString()
+      };
+
+      if (accountType === "insurance" && formData.policyFileName) {
+        updateData.policy_file_name = formData.policyFileName;
+      }
+
       const { error } = await supabase
         .from("profiles")
-        .update({
-          organization_name: formData.organizationName,
-          license_number: formData.licenseNumber,
-          contact_email: formData.contactEmail,
-          config_json: updatedConfig,
-          updated_at: new Date().toISOString()
-        })
+        .update(updateData)
         .eq("id", user.id);
 
       if (error) throw error;
+      
+      // If insurance changed policy, trigger backend processing
+      if (accountType === "insurance" && formData.policyFileBase64) {
+        const { data: { session } } = await supabase.auth.getSession();
+        fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/process-policy`, {
+          method: "POST",
+          headers: { 
+            "Authorization": `Bearer ${session?.access_token}` 
+          }
+        }).catch(err => console.error("Failed to trigger policy embedding:", err));
+      }
       
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
@@ -201,16 +229,56 @@ export default function SettingsPage() {
               value={formData.contactEmail}
               onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })}
               icon={Mail}
-              required
+              required={accountType !== "insurance"}
             />
             <Input
               label="Physical Address"
               value={formData.address}
               onChange={(e) => setFormData({ ...formData, address: e.target.value })}
               icon={MapPin}
-              required
+              required={accountType !== "insurance"}
             />
           </div>
+
+          {/* Section 3: Policy Rules (Insurance Only) */}
+          {accountType === "insurance" && (
+            <>
+              <div className="lg:col-span-1">
+                <h2 className="font-display font-bold text-lg text-[#0a0a0a]">Policy Guidelines</h2>
+                <p className="text-sm text-[#6b7280] mt-1">Upload PDF rules for AI claim adjudication.</p>
+              </div>
+              <div className="lg:col-span-2 bg-white border border-[#e5e7eb] rounded-xl px-6 py-4 shadow-sm">
+                <div className="relative">
+                  <input 
+                    type="file" 
+                    accept="application/pdf"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const base64 = (reader.result as string).split(',')[1];
+                          setFormData(prev => ({ 
+                            ...prev, 
+                            policyFileBase64: base64,
+                            policyFileName: file.name
+                          }));
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    className="w-full px-4 py-3 bg-white border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] rounded-xl text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#f0fdf4] file:text-[#16a34a] hover:file:bg-[#dcfce7] cursor-pointer transition-all"
+                  />
+                  {formData.policyFileName && (
+                    <div className="mt-3 flex items-center gap-2 text-sm text-[#16a34a] font-semibold bg-[#f0fdf4] p-2 rounded-lg border border-[#bbf7d0]">
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span>{formData.policyFileName}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Account Auth Info (Read-only) */}
           <div className="lg:col-span-1">

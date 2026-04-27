@@ -14,9 +14,11 @@ class Config:
     # AI Configuration
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY")
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
     
     LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
     OCR_MODEL: str = os.getenv("OCR_MODEL", "baidu/qianfan-ocr-fast:free")
+    
 
 # Logging Configuration
 logging.basicConfig(

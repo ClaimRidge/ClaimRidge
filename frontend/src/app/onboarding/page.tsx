@@ -96,6 +96,7 @@ export default function OnboardingPage() {
           ...profileData,
           organization_name: insuranceDetails.companyNameEn,
           license_number: insuranceDetails.licenseNumber,
+          policy_file_name: insuranceDetails.policyFileName,
           config_json: {
             organization_name_ar: insuranceDetails.companyNameAr,
             policy_file_base64: insuranceDetails.policyFileBase64,
@@ -111,6 +112,17 @@ export default function OnboardingPage() {
       if (error) {
         setError(error.message);
         return;
+      }
+
+      if (role === "insurance" && insuranceDetails.policyFileBase64) {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/process-policy`, {
+          method: "POST",
+          headers: { 
+            "Authorization": `Bearer ${session?.access_token}` 
+          }
+        }).catch(err => console.error("Failed to trigger policy embedding:", err));
       }
 
       router.push("/dashboard");

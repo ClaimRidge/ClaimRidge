@@ -20,6 +20,8 @@ export interface ScrubResult {
   issues: ScrubIssue[];
   corrected_claim: ClaimFormData;
   recommendations: string[];
+  applied_policy_rules?: string[];
+  retrieved_sources?: string[];
   created_at: string;
 }
 
@@ -113,4 +115,19 @@ export interface InsurerProfile {
   license_number?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ClaimFormData {
+  patient_name: string;
+  patient_id: string;
+  date_of_service: string;
+  provider_name: string;
+  provider_id: string;
+  payer_name: string;
+  payer_id: string;
+  diagnosis_codes: string[];
+  procedure_codes: string[];
+  billed_amount: number;
+  notes: string;
+  confidence_scores?: Record<string, number>;
 }

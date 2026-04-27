@@ -70,15 +70,19 @@ function NavItem({
     <Link
       href={href}
       onClick={onClick}
-      className={`group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${
+      className={`group flex items-center gap-3 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
         isActive
-          ? "bg-[#16a34a] text-white shadow-sm shadow-[#16a34a]/30"
-          : "text-white/50 hover:text-white hover:bg-white/8"
+          ? "bg-[#16a34a] text-white shadow-lg shadow-[#16a34a]/20"
+          : "text-white/40 hover:text-white hover:bg-white/5"
       }`}
     >
-      <Icon className={`h-4 w-4 flex-shrink-0 transition-colors ${isActive ? "text-white" : "text-white/40 group-hover:text-white/80"}`} />
+      <div className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${
+        isActive ? "bg-white/20" : "bg-white/5 group-hover:bg-white/10"
+      }`}>
+        <Icon className="h-4 w-4 flex-shrink-0" />
+      </div>
       <span className="flex-1 truncate">{label}</span>
-      {isActive && <ChevronRight className="h-3 w-3 text-white/60" />}
+      {isActive && <ChevronRight className="h-3 w-3 text-white/40" />}
     </Link>
   );
 }
@@ -154,50 +158,57 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
     .toUpperCase();
 
   return (
-    <div className="min-h-screen bg-[#f4f6f9] flex">
+    <div className="h-screen bg-[#f4f6f9] flex overflow-hidden">
 
       {/* ─── Desktop Sidebar ─────────────────────────────── */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-60 xl:w-64 flex-shrink-0 bg-[#0A1628] relative">
-
+      <aside className="hidden lg:flex lg:flex-col lg:w-60 xl:w-64 flex-shrink-0 bg-[#0A1628] border-r border-white/5 h-full">
         {/* Logo */}
-        <div className="h-16 flex items-center px-5 border-b border-white/8">
-          <Link href="/dashboard/insurance">
-            <ClaimRidgeLogo size={26} variant="dark" />
+        <div className="h-20 flex items-center px-6 border-b border-white/5">
+          <Link href="/dashboard/insurance" className="hover:opacity-80 transition-opacity">
+            <ClaimRidgeLogo size={28} variant="dark" />
           </Link>
         </div>
 
-
-
-        {/* Navigation */}
-        <nav className="flex-1 px-3 py-2 space-y-5 overflow-y-auto">
-          {NAV_GROUPS.map((group) => (
-            <div key={group.label}>
-              <p className="px-3 mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-white/25">
-                {group.label}
-              </p>
-              <div className="space-y-0.5">
-                {group.items.map((item) => (
-                  <NavItem
-                    key={item.href}
-                    {...item}
-                    pathname={pathname}
-                  />
-                ))}
+        {/* Unified Navigation Container */}
+        <div className="flex-1 flex flex-col justify-between py-6 px-3 min-h-0">
+          {/* Main Menu */}
+          <nav className="space-y-6 overflow-y-auto no-scrollbar">
+            {NAV_GROUPS.map((group) => (
+              <div key={group.label} className="space-y-1">
+                <p className="px-3 mb-2 text-[10px] font-bold uppercase tracking-[0.15em] text-white/20">
+                  {group.label}
+                </p>
+                <div className="space-y-0.5">
+                  {group.items.map((item) => (
+                    <NavItem
+                      key={item.href}
+                      {...item}
+                      pathname={pathname}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
-        </nav>
+            ))}
+          </nav>
 
-        {/* Bottom: Settings + Sign Out */}
-        <div className="px-3 py-3 border-t border-white/8 space-y-0.5">
-          <NavItem href="/dashboard/insurance/settings" label="Settings" icon={Settings} pathname={pathname} />
-          <button
-            onClick={handleSignOut}
-            className="w-full group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-red-400 hover:bg-red-500/10 transition-all duration-150"
-          >
-            <LogOut className="h-4 w-4 flex-shrink-0 text-white/30 group-hover:text-red-400 transition-colors" />
-            Sign Out
-          </button>
+          {/* Bottom Actions - Unified with Nav Style */}
+          <div className="mt-8 space-y-1 pt-6 border-t border-white/5">
+            <NavItem 
+              href="/dashboard/insurance/settings" 
+              label="Settings" 
+              icon={Settings} 
+              pathname={pathname} 
+            />
+            <button
+              onClick={handleSignOut}
+              className="w-full group flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-white/40 hover:text-red-400 hover:bg-red-400/10 transition-all duration-200"
+            >
+              <div className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 group-hover:bg-red-400/10 transition-colors">
+                <LogOut className="h-4 w-4 transition-colors" />
+              </div>
+              <span className="flex-1 text-left">Sign Out</span>
+            </button>
+          </div>
         </div>
       </aside>
 

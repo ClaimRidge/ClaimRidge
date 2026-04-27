@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ClaimFormData } from "@/types/claim";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { Plus, X, Send, Upload, FileText, Sparkles, CheckCircle, Search } from "lucide-react";
+import { Plus, X, Send, Upload, FileText, Sparkles, CheckCircle, Search, AlertTriangle } from "lucide-react";
 import CodePicker from "@/components/CodePicker";
 import PayerPicker from "@/components/PayerPicker";
 import { ICD10_CODES } from "@/data/icd10";
@@ -28,23 +28,28 @@ const INITIAL_FORM: ClaimFormData = {
   notes: "",
 };
 
-interface ExtractedClaim {
-  patientName?: string;
-  patientId?: string;
-  dateOfService?: string;
-  providerName?: string;
-  providerId?: string;
-  payerName?: string;
-  policyMemberId?: string;
-  primaryDiagnosis?: string;
-  additionalDiagnoses?: string[];
-  primaryProcedure?: string;
-  additionalProcedures?: string[];
-  billedAmount?: number;
-  additionalNotes?: string;
+// NEW: Updated to match Pydantic Backend output
+interface FieldData {
+  value: any;
+  confidence: number;
 }
 
-// Convert a File to base64 (strip the "data:*/*;base64," prefix)
+interface ExtractedClaim {
+  patient_name?: FieldData;
+  patient_id?: FieldData;
+  date_of_service?: FieldData;
+  provider_name?: FieldData;
+  provider_id?: FieldData;
+  payer_name?: FieldData;
+  member_id?: FieldData;
+  primary_diagnosis?: FieldData;
+  additional_diagnoses?: FieldData;
+  primary_procedure?: FieldData;
+  additional_procedures?: FieldData;
+  billed_amount?: FieldData;
+  additional_notes?: FieldData;
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -60,6 +65,9 @@ function fileToBase64(file: File): Promise<string> {
 
 export default function ClaimForm() {
   const [form, setForm] = useState<ClaimFormData>(INITIAL_FORM);
+  // NEW: State to track AI confidence for UI highlighting
+  const [extractedScores, setExtractedScores] = useState<Record<string, number | undefined>>({});
+  
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -76,6 +84,7 @@ export default function ClaimForm() {
   const [payerPickerOpen, setPayerPickerOpen] = useState(false);
   const [providerIdHint, setProviderIdHint] = useState<string>("");
   const [registeredPayerUuid, setRegisteredPayerUuid] = useState<string | null>(null);
+  const router = useRouter();
 
   const handleProviderSelect = (provider: Provider) => {
     setForm((prev) => ({
@@ -100,13 +109,14 @@ export default function ClaimForm() {
     }
   };
 
-  const router = useRouter();
-
   const updateField = (field: keyof ClaimFormData, value: string | number) => {
     setForm((prev) => ({ ...prev, [field]: value }));
-    
     if (field === "payer_name") {
       setRegisteredPayerUuid(null);
+    }
+    // If user manually edits an AI field, we clear the warning score
+    if (extractedScores[field] !== undefined) {
+      setExtractedScores(prev => ({ ...prev, [field]: 100 }));
     }
   };
 
@@ -119,43 +129,56 @@ export default function ClaimForm() {
   };
 
   const addArrayItem = (field: "diagnosis_codes" | "procedure_codes") => {
-    setForm((prev) => ({
-      ...prev,
-      [field]: [...prev[field], ""],
-    }));
+    setForm((prev) => ({ ...prev, [field]: [...prev[field], ""] }));
   };
 
   const removeArrayItem = (field: "diagnosis_codes" | "procedure_codes", index: number) => {
     if (form[field].length <= 1) return;
-    setForm((prev) => ({
-      ...prev,
-      [field]: prev[field].filter((_, i) => i !== index),
-    }));
+    setForm((prev) => ({ ...prev, [field]: prev[field].filter((_, i) => i !== index) }));
   };
 
+  // NEW: Updated to map nested AI values and extract confidence scores
   const applyExtractedData = (data: ExtractedClaim) => {
     const diagnosisCodes = [
-      data.primaryDiagnosis || "",
-      ...(data.additionalDiagnoses || []),
+      data.primary_diagnosis?.value || "",
+      ...(data.additional_diagnoses?.value || []),
     ].filter((c, i, arr) => c !== "" || (i === 0 && arr.length === 1));
 
     const procedureCodes = [
-      data.primaryProcedure || "",
-      ...(data.additionalProcedures || []),
+      data.primary_procedure?.value || "",
+      ...(data.additional_procedures?.value || []),
     ].filter((c, i, arr) => c !== "" || (i === 0 && arr.length === 1));
 
     setForm({
-      patient_name: data.patientName || "",
-      patient_id: data.patientId || "",
-      date_of_service: data.dateOfService || "",
-      provider_name: data.providerName || "",
-      provider_id: data.providerId || "",
-      payer_name: data.payerName || "",
-      payer_id: data.policyMemberId || "",
+      patient_name: data.patient_name?.value || "",
+      patient_id: data.patient_id?.value || "",
+      date_of_service: data.date_of_service?.value || "",
+      provider_name: data.provider_name?.value || "",
+      provider_id: data.provider_id?.value || "",
+      payer_name: data.payer_name?.value || "",
+      payer_id: data.member_id?.value || "",
       diagnosis_codes: diagnosisCodes.length > 0 ? diagnosisCodes : [""],
       procedure_codes: procedureCodes.length > 0 ? procedureCodes : [""],
-      billed_amount: typeof data.billedAmount === "number" ? data.billedAmount : 0,
-      notes: data.additionalNotes || "",
+      billed_amount: typeof data.billed_amount?.value === "number" ? data.billed_amount.value : 0,
+      notes: data.additional_notes?.value || "",
+    });
+
+    // NOTE: Backend returns 0-100. We round and cap at 100 for safety.
+    const getConf = (field?: FieldData) => 
+      field?.confidence !== undefined ? Math.min(100, Math.round(field.confidence)) : undefined;
+
+    setExtractedScores({
+      patient_name: getConf(data.patient_name),
+      patient_id: getConf(data.patient_id),
+      date_of_service: getConf(data.date_of_service),
+      provider_name: getConf(data.provider_name),
+      provider_id: getConf(data.provider_id),
+      payer_name: getConf(data.payer_name),
+      payer_id: getConf(data.member_id),
+      billed_amount: getConf(data.billed_amount),
+      notes: getConf(data.additional_notes),
+      primary_diagnosis: getConf(data.primary_diagnosis),
+      primary_procedure: getConf(data.primary_procedure),
     });
   };
 
@@ -195,20 +218,16 @@ export default function ClaimForm() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || "Failed to extract data from document");
+        throw new Error(data.detail || data.error || "Failed to extract data from document");
       }
 
       applyExtractedData(data.extracted as ExtractedClaim);
       setExtractedFileName(file.name);
     } catch (err) {
-      setExtractError(
-        err instanceof Error ? err.message : "Failed to process the document"
-      );
+      setExtractError(err instanceof Error ? err.message : "Failed to process the document");
     } finally {
       setExtracting(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -226,6 +245,7 @@ export default function ClaimForm() {
         payer_name: form.payer_name,
         payer_id: registeredPayerUuid || form.payer_name, 
         member_id: form.payer_id, 
+        confidence_scores: extractedScores // Optional: Send back to backend to track model performance
       };
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/scrub`, {
@@ -243,8 +263,6 @@ export default function ClaimForm() {
       }
 
       const data = await res.json();
-      
-      // FIX: Redirect back to the Scrub Results page!
       router.push(`/claims/${data.id}/results`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -252,6 +270,21 @@ export default function ClaimForm() {
       setLoading(false);
     }
   };
+
+  // Determine textarea warning classes based on confidence
+  const notesConfidence = extractedScores.notes;
+  let notesClasses = "bg-white border-[#e5e7eb] focus:ring-[#16a34a] focus:border-transparent text-[#0a0a0a]";
+  let notesWarning = null;
+  
+  if (notesConfidence !== undefined && form.notes !== "") {
+    if (notesConfidence > 0 && notesConfidence < 50) {
+      notesClasses = "bg-red-50 border-red-400 focus:ring-red-500 text-red-900";
+      notesWarning = "Low AI confidence. Please verify.";
+    } else if (notesConfidence >= 50 && notesConfidence < 80) {
+      notesClasses = "bg-amber-50 border-amber-400 focus:ring-amber-500 text-amber-900";
+      notesWarning = "AI is unsure. Please verify.";
+    }
+  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-8">
@@ -286,22 +319,17 @@ export default function ClaimForm() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/pdf,image/jpeg,image/png,image/gif,image/webp,.doc,.docx"
+            accept="application/pdf,image/jpeg,image/png,image/webp"
             onChange={handleFileUpload}
             disabled={extracting}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
-            aria-label="Upload claim document"
           />
 
           {extracting ? (
             <div className="flex flex-col items-center justify-center text-center py-2 pointer-events-none">
               <div className="animate-spin h-8 w-8 border-4 border-[#16a34a] border-t-transparent rounded-full mb-3" />
-              <p className="text-sm font-medium text-[#0a0a0a]">
-                Extracting claim data with AI...
-              </p>
-              <p className="text-xs text-[#6b7280] mt-1">
-                This usually takes a few seconds
-              </p>
+              <p className="text-sm font-medium text-[#0a0a0a]">Extracting claim data with AI...</p>
+              <p className="text-xs text-[#6b7280] mt-1">This may take up to 10seconds</p>
             </div>
           ) : extractedFileName ? (
             <div className="flex items-center gap-3 pointer-events-none">
@@ -309,16 +337,10 @@ export default function ClaimForm() {
                 <CheckCircle className="h-5 w-5 text-[#16a34a]" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-[#0a0a0a] truncate">
-                  {extractedFileName}
-                </p>
-                <p className="text-xs text-[#6b7280]">
-                  Fields auto-filled below — review and edit as needed
-                </p>
+                <p className="text-sm font-medium text-[#0a0a0a] truncate">{extractedFileName}</p>
+                <p className="text-xs text-[#6b7280]">Fields auto-filled below. Unsure AI fields are highlighted in yellow.</p>
               </div>
-              <span className="text-xs text-[#16a34a] font-medium">
-                Click to replace
-              </span>
+              <span className="text-xs text-[#16a34a] font-medium">Click to replace</span>
             </div>
           ) : (
             <div className="flex items-center gap-3 pointer-events-none">
@@ -326,12 +348,8 @@ export default function ClaimForm() {
                 <Upload className="h-5 w-5 text-[#16a34a]" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-[#0a0a0a]">
-                  Upload a claim document
-                </p>
-                <p className="text-xs text-[#6b7280]">
-                  PDF or image (JPG, PNG, WebP) &middot; Max 20MB
-                </p>
+                <p className="text-sm font-medium text-[#0a0a0a]">Upload a claim document</p>
+                <p className="text-xs text-[#6b7280]">PDF or Image (Max 20MB)</p>
               </div>
               <FileText className="h-5 w-5 text-[#d1d5db] hidden sm:block" />
             </div>
@@ -357,6 +375,7 @@ export default function ClaimForm() {
             placeholder="Full name"
             value={form.patient_name}
             onChange={(e) => updateField("patient_name", e.target.value)}
+            confidence={extractedScores.patient_name}
             required
           />
           <Input
@@ -365,6 +384,7 @@ export default function ClaimForm() {
             placeholder="e.g. 9901234567"
             value={form.patient_id}
             onChange={(e) => updateField("patient_id", e.target.value)}
+            confidence={extractedScores.patient_id}
             required
           />
           <Input
@@ -373,6 +393,7 @@ export default function ClaimForm() {
             type="date"
             value={form.date_of_service}
             onChange={(e) => updateField("date_of_service", e.target.value)}
+            confidence={extractedScores.date_of_service}
             required
           />
         </div>
@@ -384,18 +405,15 @@ export default function ClaimForm() {
           Provider Information
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="flex gap-2 items-end">
-            <div className="flex-1">
-              <Input
-                id="provider_name"
-                label="Provider / Facility Name"
-                placeholder="Hospital or clinic name"
-                value={form.provider_name}
-                onChange={(e) => updateField("provider_name", e.target.value)}
-                required
-              />
-            </div>
-          </div>
+          <Input
+            id="provider_name"
+            label="Provider / Facility Name"
+            placeholder="Hospital or clinic name"
+            value={form.provider_name}
+            onChange={(e) => updateField("provider_name", e.target.value)}
+            confidence={extractedScores.provider_name}
+            required
+          />
           <div>
             <Input
               id="provider_id"
@@ -403,12 +421,12 @@ export default function ClaimForm() {
               placeholder={providerIdHint || "License or NPI equivalent"}
               value={form.provider_id}
               onChange={(e) => updateField("provider_id", e.target.value)}
+              confidence={extractedScores.provider_id}
               required
             />
             {providerIdHint && (
               <p className="mt-1 text-xs text-[#6b7280]">
-                <span className="font-medium text-[#16a34a]">Expected format:</span>{" "}
-                <span className="font-mono">{providerIdHint}</span>
+                <span className="font-medium text-[#16a34a]">Expected format:</span> <span className="font-mono">{providerIdHint}</span>
               </p>
             )}
           </div>
@@ -421,7 +439,7 @@ export default function ClaimForm() {
           Payer / Insurance Information
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="flex gap-2 items-end">
+          <div className="flex gap-2 items-start">
             <div className="flex-1">
               <Input
                 id="payer_name"
@@ -429,29 +447,28 @@ export default function ClaimForm() {
                 placeholder="e.g. Jordan Insurance Company"
                 value={form.payer_name}
                 onChange={(e) => updateField("payer_name", e.target.value)}
+                confidence={extractedScores.payer_name}
                 required
               />
             </div>
             <button
               type="button"
               onClick={() => setPayerPickerOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-[#16a34a] hover:text-white hover:bg-[#16a34a] border border-[#bbf7d0] hover:border-[#16a34a] rounded-lg transition-colors mb-0.5"
-              title="Browse insurance companies"
+              className="inline-flex items-center gap-1.5 px-3 py-2.5 mt-7 text-sm font-medium text-[#16a34a] hover:text-white hover:bg-[#16a34a] border border-[#bbf7d0] hover:border-[#16a34a] rounded-lg transition-colors"
             >
               <Search className="h-4 w-4" />
               <span className="hidden sm:inline">Browse</span>
             </button>
           </div>
-          <div className="flex items-end">
-            <Input
-              id="payer_id"
-              label="Policy / Member ID"
-              placeholder="Insurance policy number"
-              value={form.payer_id}
-              onChange={(e) => updateField("payer_id", e.target.value)}
-              required
-            />
-          </div>
+          <Input
+            id="payer_id"
+            label="Policy / Member ID"
+            placeholder="Insurance policy number"
+            value={form.payer_id}
+            onChange={(e) => updateField("payer_id", e.target.value)}
+            confidence={extractedScores.payer_id}
+            required
+          />
         </div>
       </section>
 
@@ -462,7 +479,7 @@ export default function ClaimForm() {
         </h3>
         <div className="space-y-3">
           {form.diagnosis_codes.map((code, i) => (
-            <div key={i} className="flex gap-2 items-end">
+            <div key={i} className="flex gap-2 items-start">
               <div className="flex-1">
                 <Input
                   id={`dx-${i}`}
@@ -470,14 +487,14 @@ export default function ClaimForm() {
                   placeholder="e.g. J06.9"
                   value={code}
                   onChange={(e) => updateArrayField("diagnosis_codes", i, e.target.value)}
+                  confidence={i === 0 ? extractedScores.primary_diagnosis : undefined}
                   required={i === 0}
                 />
               </div>
               <button
                 type="button"
                 onClick={() => setCodePicker({ type: "diagnosis_codes", index: i })}
-                className="inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-[#16a34a] hover:text-white hover:bg-[#16a34a] border border-[#bbf7d0] hover:border-[#16a34a] rounded-lg transition-colors mb-0.5"
-                title="Browse ICD-10 codes"
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 mt-7 text-sm font-medium text-[#16a34a] hover:text-white hover:bg-[#16a34a] border border-[#bbf7d0] hover:border-[#16a34a] rounded-lg transition-colors"
               >
                 <Search className="h-4 w-4" />
                 <span className="hidden sm:inline">Browse</span>
@@ -486,7 +503,7 @@ export default function ClaimForm() {
                 <button
                   type="button"
                   onClick={() => removeArrayItem("diagnosis_codes", i)}
-                  className="p-2.5 text-[#9ca3af] hover:text-red-500 transition-colors mb-0.5"
+                  className="p-2.5 mt-7 text-[#9ca3af] hover:text-red-500 transition-colors"
                 >
                   <X className="h-5 w-5" />
                 </button>
@@ -510,7 +527,7 @@ export default function ClaimForm() {
         </h3>
         <div className="space-y-3">
           {form.procedure_codes.map((code, i) => (
-            <div key={i} className="flex gap-2 items-end">
+            <div key={i} className="flex gap-2 items-start">
               <div className="flex-1">
                 <Input
                   id={`cpt-${i}`}
@@ -518,14 +535,14 @@ export default function ClaimForm() {
                   placeholder="e.g. 99213"
                   value={code}
                   onChange={(e) => updateArrayField("procedure_codes", i, e.target.value)}
+                  confidence={i === 0 ? extractedScores.primary_procedure : undefined}
                   required={i === 0}
                 />
               </div>
               <button
                 type="button"
                 onClick={() => setCodePicker({ type: "procedure_codes", index: i })}
-                className="inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-[#16a34a] hover:text-white hover:bg-[#16a34a] border border-[#bbf7d0] hover:border-[#16a34a] rounded-lg transition-colors mb-0.5"
-                title="Browse CPT/HCPCS codes"
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 mt-7 text-sm font-medium text-[#16a34a] hover:text-white hover:bg-[#16a34a] border border-[#bbf7d0] hover:border-[#16a34a] rounded-lg transition-colors"
               >
                 <Search className="h-4 w-4" />
                 <span className="hidden sm:inline">Browse</span>
@@ -534,7 +551,7 @@ export default function ClaimForm() {
                 <button
                   type="button"
                   onClick={() => removeArrayItem("procedure_codes", i)}
-                  className="p-2.5 text-[#9ca3af] hover:text-red-500 transition-colors mb-0.5"
+                  className="p-2.5 mt-7 text-[#9ca3af] hover:text-red-500 transition-colors"
                 >
                   <X className="h-5 w-5" />
                 </button>
@@ -566,20 +583,26 @@ export default function ClaimForm() {
             step="0.01"
             value={form.billed_amount || ""}
             onChange={(e) => updateField("billed_amount", parseFloat(e.target.value) || 0)}
+            confidence={extractedScores.billed_amount}
             required
           />
         </div>
       </section>
 
-      {/* Notes */}
+      {/* Notes (with manual confidence styling) */}
       <section>
-        <h3 className="font-display text-base sm:text-lg font-bold text-[#0a0a0a] mb-4 pb-2 border-b border-[#e5e7eb]">
+        <h3 className="font-display text-base sm:text-lg font-bold text-[#0a0a0a] mb-4 pb-2 border-b border-[#e5e7eb] flex justify-between items-center">
           Additional Notes
+          {notesWarning && (
+            <span className={`text-xs flex items-center gap-1 font-medium ${notesClasses.includes("red") ? "text-red-500" : "text-amber-600"}`}>
+              <AlertTriangle className="h-3 w-3" /> {notesWarning}
+            </span>
+          )}
         </h3>
         <textarea
           id="notes"
           rows={3}
-          className="w-full px-4 py-2.5 bg-white border border-[#e5e7eb] rounded-lg text-[#0a0a0a] placeholder:text-[#9ca3af] focus:outline-none focus:ring-2 focus:ring-[#16a34a] focus:border-transparent transition-all duration-200 resize-none"
+          className={`w-full px-4 py-2.5 border rounded-xl placeholder:text-[#9ca3af] focus:outline-none focus:ring-4 transition-all duration-200 resize-none ${notesClasses}`}
           placeholder="Any additional context for the AI scrubber..."
           value={form.notes}
           onChange={(e) => updateField("notes", e.target.value)}
@@ -594,14 +617,12 @@ export default function ClaimForm() {
         </Button>
       </div>
 
-      {/* Payer Browser Modal */}
       <PayerPicker
         isOpen={payerPickerOpen}
         onClose={() => setPayerPickerOpen(false)}
         onSelect={handlePayerSelect}
       />
 
-      {/* Code Browser Modal */}
       <CodePicker
         isOpen={codePicker !== null}
         onClose={() => setCodePicker(null)}
@@ -611,16 +632,8 @@ export default function ClaimForm() {
           }
         }}
         codes={codePicker?.type === "procedure_codes" ? CPT_CODES : ICD10_CODES}
-        title={
-          codePicker?.type === "procedure_codes"
-            ? "Browse CPT / HCPCS Codes"
-            : "Browse ICD-10 Codes"
-        }
-        subtitle={
-          codePicker?.type === "procedure_codes"
-            ? "Common procedure codes used in MENA/Jordan clinic billing"
-            : "Common diagnosis codes used in MENA/Jordan clinic billing"
-        }
+        title={codePicker?.type === "procedure_codes" ? "Browse CPT / HCPCS Codes" : "Browse ICD-10 Codes"}
+        subtitle={codePicker?.type === "procedure_codes" ? "Common procedure codes used in MENA/Jordan clinic billing" : "Common diagnosis codes used in MENA/Jordan clinic billing"}
       />
     </form>
   );

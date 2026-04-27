@@ -70,7 +70,7 @@ const STATUS_CONFIG: Record<string, { label: string; class: string; icon: React.
   submitted: { label: "Submitted", class: "bg-blue-50 text-blue-600 border-blue-200", icon: Send },
   pending: { label: "Pending", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
   under_review: { label: "Under Review", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
-  needs_info: { label: "clarification", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
+  needs_info: { label: "Clarification", class: "bg-amber-50 text-amber-600 border-amber-200", icon: Clock },
   approved: { label: "Approved", class: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]", icon: CheckCircle },
   denied: { label: "Denied", class: "bg-red-50 text-red-600 border-red-200", icon: XCircle },
   rejected: { label: "Rejected", class: "bg-red-50 text-red-600 border-red-200", icon: XCircle },

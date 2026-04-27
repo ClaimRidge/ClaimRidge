@@ -1,138 +1,90 @@
 import json
-import re
 import logging
+import re
+import base64
+import pypdfium2 as pdfium
+from typing import List, Optional
+from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.output_parsers import PydanticOutputParser
 from core.config import Config
+from core.database import supabase
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_PROMPT = """You are a medical claims document parser. Extract structured data from the attached medical claim document (PDF, image, or form scan).
+# --- 1. PYDANTIC SCHEMAS ---
+class FieldString(BaseModel):
+    value: str = Field(default="", description="The extracted text. Empty string if not found.")
+    confidence: int = Field(default=0, description="Confidence score 0-100. 0 if not found.")
 
-Return ONLY a valid JSON object with this exact structure — no markdown, no explanation:
+class FieldFloat(BaseModel):
+    value: float = Field(default=0.0, description="The extracted numeric value. 0.0 if not found.")
+    confidence: int = Field(default=0, description="Confidence score 0-100. 0 if not found.")
 
-{
-  "patientName": "<string>",
-  "patientId": "<string>",
-  "dateOfService": "<YYYY-MM-DD>",
-  "providerName": "<string>",
-  "providerId": "<string>",
-  "payerName": "<string>",
-  "policyMemberId": "<string>",
-  "primaryDiagnosis": "<ICD-10 code, e.g. J06.9>",
-  "additionalDiagnoses": ["<ICD-10 code>", ...],
-  "primaryProcedure": "<CPT/HCPCS code, e.g. 99213>",
-  "additionalProcedures": ["<CPT/HCPCS code>", ...],
-  "billedAmount": <number>,
-  "additionalNotes": "<string>"
-}
+class FieldStringList(BaseModel):
+    value: List[str] = Field(default_factory=list, description="List of strings. Empty list if not found.")
+    confidence: int = Field(default=0, description="Confidence score 0-100. 0 if not found.")
 
-Rules:
-- If a field is not present in the document, use an empty string "" for strings, 0 for billedAmount, or [] for arrays.
-- Normalize dates to YYYY-MM-DD format.
-- Extract ICD-10 and CPT/HCPCS codes exactly as they appear (including punctuation like the dot in J06.9).
-- If multiple diagnoses exist, put the primary one in primaryDiagnosis and the rest in additionalDiagnoses.
-- Same rule for procedures.
-- Extract billedAmount as a plain number (no currency symbols or commas).
-- Return only the JSON object, nothing else."""
+class ClaimExtractionResult(BaseModel):
+    patient_name: FieldString
+    patient_id: FieldString
+    date_of_service: FieldString = Field(description="Format YYYY-MM-DD")
+    provider_name: FieldString
+    provider_id: FieldString
+    payer_name: FieldString
+    member_id: FieldString
+    primary_diagnosis: FieldString = Field(description="Primary ICD-10 code")
+    additional_diagnoses: FieldStringList = Field(description="Additional ICD-10 codes")
+    primary_procedure: FieldString = Field(description="Primary CPT/HCPCS code")
+    additional_procedures: FieldStringList = Field(description="Additional CPT/HCPCS codes")
+    billed_amount: FieldFloat
+    additional_notes: FieldString = Field(description="Any extra notes. Empty string if none.")
 
-SCRUB_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert medical claims scrubbing engine specialized in MENA healthcare markets (Jordan, UAE, KSA). You analyze medical insurance claims with the rigor of a senior medical biller and return detailed, actionable feedback.
+parser = PydanticOutputParser(pydantic_object=ClaimExtractionResult)
+
+# --- 2. PROMPTS ---
+EXTRACTION_PROMPT = """You are an expert medical claims parser. 
+Extract the data directly from the provided image.
+
+CRITICAL RULES:
+1. NO HALLUCINATIONS: If a field is NOT clearly present in the image, set its value to "" (or 0) and its confidence to 0. Do not invent notes or IDs.
+2. CONFIDENCE SCORES: Rate your confidence from 0 to 100 based on how clearly you can read the text.
+3. Normalize dates to YYYY-MM-DD.
+
+{format_instructions}
+"""
+
+SCRUB_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert medical claims scrubbing engine. You analyze medical insurance claims with the rigor of a senior medical biller and return detailed, actionable feedback.
+
+{unregistered_warning}
+
+## Payer-Specific Policy Rules (CRITICAL)
+Here are the specific policy rules retrieved from this Payer's handbook. You MUST apply these rules to this claim. 
+<payer_rules>
+{policy_context}
+</payer_rules>
 
 ## Response Format
-Return ONLY valid JSON (no markdown, no explanation outside the JSON) with this exact structure:
-{
+Return ONLY valid JSON with this exact structure:
+{{
   "status": "clean" | "warnings" | "errors",
   "overall_score": <number 0-100>,
   "issues": [
-    {
-      "field": "<exact field name from the claim>",
+    {{
+      "field": "<exact field name>",
       "severity": "error" | "warning" | "info",
-      "message": "<specific, concrete description of the problem>",
-      "suggestion": "<exact fix — include the corrected code/value when possible>"
-    }
+      "message": "<specific problem>",
+      "suggestion": "<exact fix>"
+    }}
   ],
-  "corrected_claim": { <corrected version of the input claim with same field names> },
-  "recommendations": ["<actionable recommendation strings>"]
-}
-
-## Scoring Rubric — Be Realistic
-Start at 100 and deduct points. Most real-world claims have issues — a score above 90 should be rare.
-
-Point deductions:
-- Missing required field (patient_id, provider_id, payer_id, date_of_service): −15 each
-- Invalid or unrecognized ICD-10 code: −12 per code
-- Non-specific / truncated ICD-10 code (e.g. J06 instead of J06.9): −5 per code
-- Invalid or unrecognized CPT/HCPCS code: −12 per code
-- Diagnosis-procedure mismatch (procedure not medically justified by diagnosis): −15
-- Billed amount significantly outside expected range for procedure: −8
-- Date of service in the future: −10
-- Date of service is a Friday (weekend in MENA region): −3
-- Duplicate codes in diagnosis or procedure lists: −5
-- Unbundling issue (billing separately for components of a bundled procedure): −10
-- Missing prior authorization for procedures that commonly require it: −8
-- Patient/provider/payer ID format doesn't match MENA standards: −3 per field
-- Notes field empty when claim has complexities that need documentation: −2
-
-Score thresholds for status:
-- 90-100: "clean" — ready to submit
-- 70-89: "warnings" — submittable but may face delays or partial rejection
-- 0-69: "errors" — likely to be rejected, must fix before submission
-
-## What to Check (in depth)
-
-### 1. ICD-10 Code Validation
-- Verify each code follows valid ICD-10 format (letter + 2 digits + optional decimal + up to 4 more characters)
-- Flag codes that are real but non-specific (e.g. R10 "Abdominal pain unspecified" → suggest R10.11 "Right upper quadrant pain")
-- Flag codes that don't exist in ICD-10
-- Check if multiple diagnosis codes are clinically consistent with each other
-- For MENA: check if codes align with common regional diagnoses
-
-### 2. CPT/HCPCS Code Validation
-- Verify format (5 digits for CPT, or letter + 4 digits for HCPCS)
-- Check if the procedure code is consistent with the diagnosis — a knee MRI with a respiratory diagnosis is a red flag
-- Flag if high-complexity E/M codes (99214, 99215) are used without supporting diagnosis complexity
-
-### 3. Medical Necessity & Consistency
-- Does the procedure logically follow from the diagnosis?
-- Are there diagnosis codes that suggest the need for additional procedures not listed?
-- Is there a mismatch between the clinical picture and the billed services?
-
-### 4. Financial Validation
-- Compare billed amount against typical ranges for the procedure codes
-- Flag if a claim has multiple high-cost procedures that may need justification
-- Check if billed amount is zero or negative
-
-### 5. MENA-Specific Rules
-- Jordan: Claims to JIMA (Jordan Insurance Medical Association) require specific provider registration numbers. National ID format is 10 digits.
-- UAE: DHA (Dubai Health Authority) and HAAD (Abu Dhabi) have specific coding requirements. Emirates ID format: 784-XXXX-XXXXXXX-X
-- KSA: CCHI (Council of Cooperative Health Insurance) requires Saudi ID or Iqama number. Common payers include Bupa Arabia, Tawuniya, Medgulf.
-- Friday/Saturday are weekends — elective procedures on these days are unusual
-- Prior authorization is commonly required for: MRI/CT scans, surgical procedures, specialty medications, hospital admissions, physiotherapy beyond initial evaluation
-
-### 6. Completeness
-- All ID fields should be populated (patient_id, provider_id, payer_id)
-- Provider name and payer name should be present
-- Date of service is required
-- At least one diagnosis code and one procedure code
-
-### 7. Duplicate & Unbundling Detection
-- Check for duplicate diagnosis or procedure codes
-- Check for unbundling: billing component codes separately when a comprehensive code exists
-
-## Feedback Quality Rules
-- NEVER give generic feedback like "looks good" or "no issues found" unless the claim is genuinely perfect
-- Every issue must reference a SPECIFIC field and give a SPECIFIC suggestion with corrected values
-- The "message" should explain WHY this is a problem (e.g. "J06 is a non-specific upper respiratory code — payers in Jordan frequently reject claims with unspecified diagnosis codes")
-- The "suggestion" should tell the user EXACTLY what to change (e.g. "Use J06.9 (Acute upper respiratory infection, unspecified) or a more specific code like J02.9 (Acute pharyngitis, unspecified) if applicable")
-- Recommendations should be practical next steps, not generic advice
-- In the corrected_claim, actually fix the values — use more specific codes, correct formats, etc.
-
-## Important
-- Be thorough but honest. If something looks fine, don't invent problems.
-- A perfect score of 100 means you checked everything and found zero issues — this is uncommon.
-- Do NOT inflate scores to be nice. Real claims scrubbers reject ~20-30% of claims.
-- The corrected_claim must have the same field structure as the input."""
+  "corrected_claim": {{ <corrected version of the input> }},
+  "recommendations": ["<actionable recommendation strings>"],
+  "applied_policy_rules": ["<Quote the exact rules from the payer_rules section that you used to evaluate this claim>"]
+}}
+"""
 
 MEDICAL_REVIEW_PROMPT = """You are ClaimRidge AI, acting as a Chief Medical Officer and Claims Adjudicator for a health insurance company in the MENA region.
 Your task is to review a medical claim specifically for 'Medical Necessity' and 'Clinical Appropriateness' based on standard global clinical guidelines (WHO, NICE, AHA) and local GCC/Levant practices.
@@ -160,104 +112,172 @@ Use EXACTLY this structure:
 [Briefly mention standard medical protocols that support your reasoning. e.g., "According to standard radiological guidelines, an MRI of the lumbar spine is not indicated as a first-line diagnostic tool for acute lower back pain without neurological deficits..."]
 """
 
+# --- 3. HELPER FUNCTIONS & LLM INITIALIZATION ---
+
+def get_vision_llm():
+    """Initializes the native Google Gemini VLM for extraction."""
+    return ChatGoogleGenerativeAI(
+        model=Config.OCR_MODEL,
+        google_api_key=Config.GEMINI_API_KEY,
+        temperature=0.0
+    )
+
 def get_llm(model_name: str = Config.LLM_MODEL):
-    """Returns Groq for main LLM tasks, and OpenRouter for OCR/Vision tasks."""
-    if model_name == Config.OCR_MODEL:
-        logger.debug(f"Initializing OpenRouter (OCR) LLM with model: {model_name}")
-        return ChatOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=Config.OPENROUTER_API_KEY,
-            model=model_name,
-            temperature=0.3,
-        )
-    
-    logger.debug(f"Initializing Groq LLM with model: {model_name}")
+    """Initializes Groq for standard text tasks (Scrubbing, Recommendations)."""
     return ChatGroq(
         api_key=Config.GROQ_API_KEY,
         model_name=model_name,
         temperature=0.3,
     )
 
+def get_embeddings():
+    """Initializes Google's fast text embedding model."""
+    return GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001", 
+        google_api_key=Config.GEMINI_API_KEY
+    )
+
 def extract_json_from_text(text: str) -> str:
     text = re.sub(r'```[\w]*\s*\n?', '', text)
-    
     start_idx = text.find('{')
     end_idx = text.rfind('}')
-    
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         return text[start_idx:end_idx + 1]
-    
     return text.strip()
 
-async def extract_claim_from_document(file_base64: str, media_type: str) -> dict:
-    """
-    Extracts structured claim data from a base64 document using the new OCR Vision model.
-    """
-    # Grab the specific OCR model from your config
-    llm = get_llm(Config.OCR_MODEL) 
+async def process_and_embed_policy_pdf(insurer_id: str, base64_pdf: str):
+    """Called once when an insurer uploads their policy. Chunks the PDF and saves to Supabase."""
+    logger.info(f"Starting PDF processing for insurer {insurer_id}")
     
-    # Format the image data properly for the Vision model
+    # 1. Decode and read PDF
+    pdf_bytes = base64.b64decode(base64_pdf)
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    
+    full_text = ""
+    for page in pdf:
+        text_page = page.get_textpage()
+        full_text += text_page.get_text_range() + "\n\n"
+        
+    if not full_text.strip():
+        raise ValueError("The uploaded PDF contains no readable text. If it is a scanned image, please upload a text-searchable PDF.")
+
+    logger.info(f"Extracted {len(full_text)} characters from PDF.")
+
+    # 2. Safely chunk the text using LangChain
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=150,
+        length_function=len,
+    )
+    chunks = text_splitter.split_text(full_text)
+    logger.info(f"Split PDF into {len(chunks)} chunks. Beginning embedding...")
+
+    embeddings_model = get_embeddings()
+    
+    # 3. Clear old policy chunks for this insurer
+    supabase.table("policy_chunks").delete().eq("insurer_id", insurer_id).execute()
+    
+    # 4. Embed and insert in safe batches (Avoids Google Rate Limits & Supabase Payload limits)
+    batch_size = 20 
+    for i in range(0, len(chunks), batch_size):
+        batch_chunks = chunks[i:i+batch_size]
+        
+        # Get embeddings for the batch
+        vectors = embeddings_model.embed_documents(batch_chunks)
+        
+        payload = []
+        for chunk, vector in zip(batch_chunks, vectors):
+            payload.append({
+                "insurer_id": insurer_id,
+                "content": chunk,
+                "embedding": vector
+            })
+            
+        # Insert into Supabase
+        res = supabase.table("policy_chunks").insert(payload).execute()
+        if not res.data:
+            logger.warning(f"Batch {i//batch_size + 1} insert may have failed.")
+        else:
+            logger.info(f"Inserted batch {i//batch_size + 1} into database.")
+        
+    logger.info(f"Successfully embedded all {len(chunks)} policy chunks for insurer {insurer_id}")
+
+async def extract_claim_from_document(file_base64: str, media_type: str) -> dict:
+    """Single-step extraction: Passes image directly to Gemini, getting strict JSON back instantly."""
+    vision_llm = get_vision_llm()
+    
+    # Format the prompt with the Pydantic JSON instructions
+    prompt_text = EXTRACTION_PROMPT.format(format_instructions=parser.get_format_instructions())
     image_data_url = f"data:{media_type};base64,{file_base64}"
     
-    # FIX: Combine the System instructions and User instructions into a single HumanMessage.
-    # Baidu's OCR model rejects separate SystemMessages for vision tasks.
     messages = [
         HumanMessage(content=[
-            {
-                "type": "text", 
-                "text": f"{EXTRACTION_PROMPT}\n\nExtract the claim data from this attached document:"
-            },
-            {
-                "type": "image_url", 
-                "image_url": {"url": image_data_url}
-            }
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": image_data_url}}
         ])
     ]
     
-    response = await llm.ainvoke(messages)
-    json_str = extract_json_from_text(response.content)
+    logger.info(f"Calling Fast Vision Model ({Config.OCR_MODEL}) for 1-step extraction...")
     
     try:
-        return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"AI returned invalid JSON during extraction. Raw output: {json_str}") from e
-    
-async def scrub_claim(claim_data: dict) -> dict:
-    """
-    Scrubs the structured claim data against MENA medical billing rules and returns an adjudication report.
-    """
-    patient_name = claim_data.get('patient_name', 'Unknown')
-    logger.info(f"Starting claim scrub for patient: {patient_name}")
-    
-    # Grab the standard Text LLM from your config
+        response = await vision_llm.ainvoke(messages)
+        # Parse the raw string response into our strict Pydantic model
+        result = parser.parse(response.content)
+        return result.model_dump()
+        
+    except Exception as e:
+        logger.error(f"Single-step extraction failed: {str(e)}")
+        raise ValueError("The AI failed to format the document properly. Please re-upload.") from e
+
+async def scrub_claim(claim_data: dict, registered_payer_id: str = None) -> dict:
     llm = get_llm()
-    
-    # Convert the python dict back to a JSON string for the prompt
     claim_json_str = json.dumps(claim_data, indent=2)
-    logger.debug(f"Converted claim data to JSON, length: {len(claim_json_str)}")
+    
+    unregistered_warning = ""
+    policy_context = "No specific payer rules found. Use standard medical billing guidelines."
+    retrieved_chunks = []
+
+    if registered_payer_id:
+        try:
+            search_query = f"Rules for Diagnoses: {', '.join(claim_data.get('diagnosis_codes', []))} and Procedures: {', '.join(claim_data.get('procedure_codes', []))}"
+            embeddings_model = get_embeddings()
+            query_vector = embeddings_model.embed_query(search_query)
+            
+            res = supabase.rpc("match_policy_rules", {
+                "query_embedding": query_vector,
+                "match_threshold": 0.4,
+                "match_count": 4,
+                "p_insurer_id": registered_payer_id
+            }).execute()
+            
+            if res.data and len(res.data) > 0:
+                retrieved_chunks = [match["content"] for match in res.data]
+                policy_context = "\n---\n".join(retrieved_chunks)
+        except Exception as e:
+            logger.error(f"RAG retrieval failed: {e}")
+    else:
+        unregistered_warning = """... (keep your existing warning) ..."""
+
+    formatted_system_prompt = SCRUB_SYSTEM_PROMPT.format(
+        unregistered_warning=unregistered_warning,
+        policy_context=policy_context
+    )
     
     messages = [
-        SystemMessage(content=SCRUB_SYSTEM_PROMPT),
+        SystemMessage(content=formatted_system_prompt),
         HumanMessage(content=f"Analyze and scrub the following medical claim:\n\n{claim_json_str}")
     ]
     
-    logger.debug("Sending scrub request to LLM")
     response = await llm.ainvoke(messages)
-    logger.debug(f"Received scrub response from LLM, response length: {len(response.content)}")
-    
     json_str = extract_json_from_text(response.content)
-    logger.debug("Extracted JSON string from scrub response")
     
     try:
         result = json.loads(json_str)
-        status = result.get('status', 'unknown')
-        score = result.get('overall_score', 0)
-        issues = len(result.get('issues', []))
-        logger.info(f"Claim scrub completed - patient: {patient_name}, status: {status}, score: {score}, issues: {issues}")
+        result["retrieved_sources"] = retrieved_chunks
         return result
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse scrub JSON for patient {patient_name}: {str(e)}")
-        raise ValueError(f"AI returned invalid JSON during scrubbing. Raw output: {json_str}") from e
+    except Exception as e:
+        logger.error(f"Failed to parse scrub JSON: {str(e)}")
+        raise ValueError("AI returned invalid JSON during scrubbing.") from e
 
 async def generate_medical_recommendation(claim_data: dict) -> str:
     """

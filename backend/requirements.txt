@@ -5,5 +5,6 @@ pydantic
 python-dotenv
 langchain
 langchain-openai
-langchain-groq
-groq
+langchain-google-genai
+pypdfium2
+langchain-text-splitters

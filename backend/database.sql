@@ -67,6 +67,7 @@ CREATE TABLE public.claims (
   scrub_warnings integer DEFAULT 0,
   payer_name_raw text,
   needs_entity_mapping boolean DEFAULT false,
+  ai_recommendation text,
   CONSTRAINT claims_pkey PRIMARY KEY (id),
   CONSTRAINT claims_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id),
   CONSTRAINT claims_clinic_id_fkey FOREIGN KEY (clinic_id) REFERENCES auth.users(id)
@@ -88,6 +89,14 @@ CREATE TABLE public.claims_audit (
   created_at timestamp with time zone DEFAULT now(),
   CONSTRAINT claims_audit_pkey PRIMARY KEY (id),
   CONSTRAINT claims_audit_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.policy_chunks (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  insurer_id uuid,
+  content text NOT NULL,
+  embedding USER-DEFINED,
+  CONSTRAINT policy_chunks_pkey PRIMARY KEY (id),
+  CONSTRAINT policy_chunks_insurer_id_fkey FOREIGN KEY (insurer_id) REFERENCES public.profiles(id)
 );
 CREATE TABLE public.profiles (
   id uuid NOT NULL,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Claim, ScrubIssue } from "@/types/claim";
@@ -17,10 +17,11 @@ import {
   XCircle,
   Info,
   ArrowLeft,
-  FilePlus,
   Download,
   FileCheck,
   FileText,
+  X,
+  ShieldCheck,
 } from "lucide-react";
 
 function SeverityIcon({ severity }: { severity: ScrubIssue["severity"] }) {
@@ -94,7 +95,6 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function ResultsPage() {
   const params = useParams();
-  const router = useRouter();
   const [claim, setClaim] = useState<Claim | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -103,6 +103,7 @@ export default function ResultsPage() {
   const [generatingPayerPdf, setGeneratingPayerPdf] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const supabase = createClient();
+  const [showScoringGuide, setShowScoringGuide] = useState(false);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -359,12 +360,21 @@ export default function ResultsPage() {
       {/* Summary Card */}
       <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm p-6 md:p-8 mb-6">
         <div className="flex flex-col md:flex-row items-center gap-8">
-          <ScoreRing score={result.overall_score} />
+          <div className="flex flex-col items-center">
+            <ScoreRing score={result.overall_score} />
+            <button 
+              onClick={() => setShowScoringGuide(true)}
+              className="mt-3 text-xs font-medium text-[#16a34a] hover:text-[#15803d] flex items-center gap-1 transition-colors"
+            >
+              <Info className="h-3.5 w-3.5" />
+              How is this calculated?
+            </button>
+          </div>
           <div className="flex-1 text-center md:text-left">
             <div className="mb-3">
               <StatusBadge status={result.status} />
             </div>
-            <h2 className="font-display text-lg sm:text-xl font-bold text-[#0a0a0a] mb-1 break-words">
+            <h2 className="font-sans text-lg sm:text-xl font-bold text-[#0a0a0a] mb-1 break-words tracking-tight">
               {claim.patient_name} — {claim.date_of_service}
             </h2>
             <p className="text-[#6b7280] text-xs sm:text-sm break-words">
@@ -445,6 +455,34 @@ export default function ResultsPage() {
         </div>
       )}
 
+      {/* Payer Policy References */}
+      {result.retrieved_sources && result.retrieved_sources.length > 0 && (
+        <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm p-6 md:p-8 mb-6">
+          <h3 className="font-display text-lg font-bold text-[#0a0a0a] mb-4">Payer Policy Sources</h3>
+          <p className="text-sm text-[#6b7280] mb-4">The AI used the following extracts from the insurer's policy to evaluate this claim:</p>
+          
+          <div className="space-y-3">
+            {result.retrieved_sources.map((source, i) => (
+              <div key={i} className="bg-[#f9fafb] border-l-4 border-[#16a34a] p-4 rounded-r-lg">
+                <p className="text-xs font-mono text-[#6b7280] mb-1">Source Extract {i + 1}</p>
+                <p className="text-sm text-[#374151] italic">"{source}"</p>
+              </div>
+            ))}
+          </div>
+          
+          {result.applied_policy_rules && result.applied_policy_rules.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-[#f3f4f6]">
+              <p className="text-xs font-bold uppercase tracking-wider text-[#0a0a0a] mb-2">AI Interpretation:</p>
+              <ul className="list-disc list-inside space-y-1 text-sm text-[#374151] ml-2">
+                {result.applied_policy_rules.map((rule, i) => (
+                  <li key={i}>{rule}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex flex-col sm:flex-row gap-3 justify-end flex-wrap">
         <Button
@@ -485,6 +523,80 @@ export default function ResultsPage() {
           </div>
         </div>
       )}
+
+      {/* Scoring Guide Modal */}
+      {showScoringGuide && (
+        <ScoringGuideModal onClose={() => setShowScoringGuide(false)} />
+      )}
+    </div>
+  );
+}
+
+function ScoringGuideModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-[#f3f4f6] flex items-center justify-between bg-[#f9fafb]">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5 text-[#16a34a]" />
+            <h3 className="font-display font-bold text-lg text-[#0a0a0a]">AI Scoring Rubric</h3>
+          </div>
+          <button onClick={onClose} className="text-[#9ca3af] hover:text-[#0a0a0a] transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 max-h-[60vh] overflow-y-auto">
+          <p className="text-sm text-[#374151] mb-5 leading-relaxed">
+            Every claim starts with a perfect score of <strong className="text-[#16a34a]">100</strong>. The AI acts as a strict medical auditor and deducts points based on the severity of errors, missing information, or payer rule violations.
+          </p>
+
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold font-mono min-w-[48px]">-15</span>
+              <p className="text-sm text-[#374151]"><strong>Critical Errors:</strong> Missing required IDs, diagnosis-procedure mismatches (e.g., knee X-ray for a headache), or violating a strict Payer Policy rule.</p>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold font-mono min-w-[48px]">-12</span>
+              <p className="text-sm text-[#374151]"><strong>Invalid Codes:</strong> Using an ICD-10 or CPT code that does not exist in standard medical registries.</p>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center px-2 py-1 rounded bg-orange-100 text-orange-700 text-xs font-bold font-mono min-w-[48px]">-10</span>
+              <p className="text-sm text-[#374151]"><strong>Compliance Risks:</strong> Unbundled procedures, future dates of service, or submitting to an unregistered payer.</p>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs font-bold font-mono min-w-[48px]">-5</span>
+              <p className="text-sm text-[#374151]"><strong>Coding Precision:</strong> Duplicate codes or using non-specific/truncated ICD-10 codes when a more detailed code exists.</p>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <span className="inline-flex items-center justify-center px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs font-bold font-mono min-w-[48px]">-3</span>
+              <p className="text-sm text-[#374151]"><strong>Regional Rules:</strong> Formatting issues with MENA National IDs, or elective procedures billed on a Friday (weekend).</p>
+            </div>
+          </div>
+
+          <div className="mt-6 pt-4 border-t border-[#f3f4f6]">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-[#6b7280] mb-2">Score Thresholds</h4>
+            <div className="flex justify-between text-sm">
+              <span className="text-[#16a34a] font-medium">90 - 100: Clean</span>
+              <span className="text-amber-600 font-medium">70 - 89: Warnings</span>
+              <span className="text-red-600 font-medium">0 - 69: High Risk</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 bg-[#f9fafb] border-t border-[#f3f4f6] text-right">
+          <Button onClick={onClose} variant="outline" size="sm">Got it</Button>
+        </div>
+      </div>
     </div>
   );
 }

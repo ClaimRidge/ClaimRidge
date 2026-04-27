@@ -119,3 +119,28 @@ async def analyze_claim_medical_necessity(claim_id: str, current_user = Depends(
         logger.error(f"Failed to log AI inference: {e}")
         
     return {"status": "success", "ai_recommendation": recommendation_text}
+
+@router.post("/process-policy")
+async def process_policy(current_user = Depends(get_current_user)):
+    """Triggers the backend to chunk and embed the insurer's policy PDF."""
+    
+    # 1. Verify user is an insurer and get their config
+    profile_res = supabase.table("profiles").select("id, account_type, config_json").eq("id", current_user.id).execute()
+    if not profile_res.data or profile_res.data[0].get("account_type") != "insurance":
+        raise HTTPException(status_code=403, detail="Not authorized as an insurer")
+        
+    insurer_id = profile_res.data[0]["id"]
+    config_json = profile_res.data[0].get("config_json", {})
+    base64_pdf = config_json.get("policy_file_base64")
+
+    if not base64_pdf:
+        raise HTTPException(status_code=400, detail="No policy document found in profile.")
+
+    # 2. Process and Embed
+    try:
+        from services.ai_services import process_and_embed_policy_pdf
+        await process_and_embed_policy_pdf(insurer_id, base64_pdf)
+        return {"status": "success", "message": "Policy successfully embedded for AI Adjudication."}
+    except Exception as e:
+        logger.error(f"Failed to process policy for {insurer_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process policy document.")

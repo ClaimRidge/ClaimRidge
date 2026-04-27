@@ -5,7 +5,7 @@ import random
 import string
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, model_validator
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from core.security import get_current_user
 from core.database import supabase
 from services.ai_services import extract_claim_from_document
@@ -27,6 +27,8 @@ class StandardizedClaim(BaseModel):
     procedure_codes: List[str]
     currency: str = "JOD"
     notes: Optional[str] = ""
+    # NEW: Accept confidence scores
+    confidence_scores: Optional[Dict[str, Any]] = {}
 
     # 2. Completeness Check Engine
     @model_validator(mode='after')
@@ -136,16 +138,15 @@ async def ingest_structured_claim(claim: StandardizedClaim, current_user = Depen
 async def ingest_unstructured_claim(payload: DocumentIntakeRequest, current_user = Depends(get_current_user)):
     """Receives raw PDFs/Images from Emails or Portals and uses LLM to normalize them."""
     try:
-        # LLM Normalizer mapping input to internal schema
         extracted = await extract_claim_from_document(payload.fileBase64, payload.mediaType)
-        
-        # Here we would normally map 'extracted' to StandardizedClaim and pass it to 
-        # ingest_structured_claim(), but we will return it for the user to review first in the UI
         return {
             "status": "needs_review", 
             "extracted_data": extracted, 
             "message": "Document parsed. Please review and submit via structured endpoint."
         }
+    except ValueError as ve:
+        logger.error(f"AI structured extraction failed: {str(ve)}")
+        raise HTTPException(status_code=422, detail="The AI failed to format the document properly. Please re-upload.")
     except Exception as e:
         logger.error(f"Document ingestion failed: {str(e)}")
-        raise HTTPException(status_code=422, detail="LLM Normalizer failed to process document.")
+        raise HTTPException(status_code=500, detail="LLM Normalizer failed to process document.")

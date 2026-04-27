@@ -1,13 +1,12 @@
 import logging
 import uuid
 import datetime
-import json
 import time
 import random
 import string
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from core.security import get_current_user
 from core.database import supabase
 
@@ -34,6 +33,8 @@ class ClaimFormData(BaseModel):
     procedure_codes: List[str]
     billed_amount: float
     notes: Optional[str] = ""
+    # NEW: Accept confidence scores from frontend to track AI performance
+    confidence_scores: Optional[Dict[str, Any]] = {}
 
 # --- Router ---
 router = APIRouter(prefix="/api/claims", tags=["claims"])
@@ -57,11 +58,16 @@ async def extract_claim(payload: ExtractRequest, current_user = Depends(get_curr
         raise HTTPException(status_code=400, detail="Missing file data or media type")
 
     try:
+        # This now returns the nested structure: {"patient_name": {"value": "X", "confidence": 90}}
         extracted = await extract_claim_from_document(payload.fileBase64, payload.mediaType)
         return {"extracted": extracted, "fileName": payload.fileName}
+    except ValueError as ve:
+        # Catches strict LangChain Pydantic parsing failures
+        logger.error(f"AI structured extraction failed: {str(ve)}")
+        raise HTTPException(status_code=422, detail="The AI failed to read the document clearly. Please enter manually.")
     except Exception as e:
         logger.error(f"Document extraction failed: {str(e)}")
-        raise HTTPException(status_code=422, detail=f"Could not parse the document: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal processing error: {str(e)}")
 
 @router.post("/scrub")
 async def scrub_claim_endpoint(claim_data: ClaimFormData, current_user = Depends(get_current_user)):
@@ -71,11 +77,9 @@ async def scrub_claim_endpoint(claim_data: ClaimFormData, current_user = Depends
     # 1. Resolve Entities dynamically against the 'profiles' table
     resolved_payer_id = None
     
-    # Check if the frontend sent us a direct UUID from the PayerPicker
     if is_valid_uuid(claim_data.payer_id):
         resolved_payer_id = claim_data.payer_id
     else:
-        # Otherwise search the profiles table
         try:
             payer_search = supabase.table("profiles").select("id").eq("account_type", "insurance").ilike("organization_name", claim_data.payer_name).execute()
             if payer_search.data:
@@ -83,14 +87,13 @@ async def scrub_claim_endpoint(claim_data: ClaimFormData, current_user = Depends
         except Exception as e:
             logger.warning(f"Registered payer lookup failed: {e}")
 
-    # Default provider to the submitting clinic
     resolved_provider_id = current_user.id
 
     # 2. Build the Payload
     claim_payload = {
         "id": str(uuid.uuid4()), 
         "claim_number": claim_number,
-        "status": "pending", # Initial status before AI
+        "status": "pending",
         "user_id": user_id,
         "clinic_id": user_id,       
         "provider_id": resolved_provider_id, 
@@ -106,7 +109,10 @@ async def scrub_claim_endpoint(claim_data: ClaimFormData, current_user = Depends
         "billed_amount": claim_data.billed_amount or 0,
         "total_billed": claim_data.billed_amount or 0,
         "currency": "JOD",
-        "notes": claim_data.notes or ""
+        "notes": claim_data.notes or "",
+        "scrub_result": {
+            "extraction_confidence": claim_data.confidence_scores
+        }
     }
     
     insert_res = supabase.table("claims").insert(claim_payload).execute()
@@ -115,17 +121,23 @@ async def scrub_claim_endpoint(claim_data: ClaimFormData, current_user = Depends
 
     db_generated_id = insert_res.data[0]["id"]
 
-    # 3. Process via AI Service (This brings back your missing results!)
+    # 3. Process via AI Service
     try:
-        scrub_result = await scrub_claim(claim_data.model_dump())
+        scrub_dict = claim_data.model_dump(exclude={"confidence_scores"})
+        scrub_result = await scrub_claim(scrub_dict, registered_payer_id=resolved_payer_id)
     except Exception as e:
         logger.error(f"AI scrub failed: {e}")
         scrub_result = {"status": "error", "issues": [{"message": str(e)}], "overall_score": 0}
     
     # 4. Update with Results using the exact Database ID
+    final_result = {
+        **scrub_result,
+        "extraction_confidence": claim_data.confidence_scores
+    }
+    
     supabase.table("claims").update({
-        "status": "submitted", # FIX: This restores the proper "submitted" status!
-        "scrub_result": scrub_result,
+        "status": "submitted",
+        "scrub_result": final_result,
         "ai_risk_score": scrub_result.get("overall_score", 0)
     }).eq("id", db_generated_id).execute()
 
