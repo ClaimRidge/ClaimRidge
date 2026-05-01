@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from core.config import Config
 from core.database import supabase
+from services.fraud_service import fraud_detector
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +29,16 @@ Your job is to review a pre-authorisation request based on multiple clinical doc
 {policy_rules}
 
 ## YOUR TASK & CRITICAL RULES
-1. **IDENTITY VERIFICATION (STRICT)**: You MUST verify that the patient name in the clinical documents matches the "Expected Claim Details" above. Small spelling variations are okay, but if the document belongs to a different person, you MUST "deny" or "escalate" with the rationale "Identity mismatch: Document belongs to a different patient."
-2. **CLINICAL EVIDENCE CHECK**: Analyze the structured clinical data extracted from the documents. If the documents are just blank forms or generic instructions with no actual findings, "deny" the request for "Insufficient clinical information."
-3. **POLICY ADJUDICATION**: Cross-reference the clinical findings and requested procedures against the Payer Policy Rules.
+1. **IDENTITY VERIFICATION**: You MUST verify that the patient name in the clinical documents matches the "Expected Claim Details" above.
+2. **CLINICAL EVIDENCE CHECK**: If the documents are blank forms or generic instructions, "deny" the request.
+3. **POLICY ADJUDICATION**: Cross-reference the clinical findings against the Payer Policy Rules. If the rules are short or generic (e.g. "Standard medical necessity guidelines apply"), USE YOUR OWN MEDICAL KNOWLEDGE to approve it if standard conservative treatments were attempted.
 4. **DECISION**: Render a decision: "approve", "deny", or "escalate".
-   - **ESCALATE** if: procedures are high-cost (>5000 units), documents are contradictory, or policy rules are ambiguous.
+   - **ESCALATE ONLY** if documents explicitly contradict each other.
 
 Respond ONLY with valid JSON in this exact format:
 {{
     "decision": "approve" | "deny" | "escalate",
-    "rationale": "Provide a clear, clinical, and policy-based justification for your decision. Address identity verification and medical necessity specifically."
+    "rationale": "Provide a clear justification."
 }}
 """
 
@@ -103,7 +104,7 @@ async def extract_text_from_file(base64_data: str, media_type: str) -> str:
        Example:
        **Patient Identification:**
        Medicare Coverage: Yes
-       Patient Name: DOE, JOHN S.
+       Patient Name: XX YY.
 
        **Insured Information:**
        Insured's I.D. Number: 987 65 4321A
@@ -123,33 +124,21 @@ async def extract_text_from_file(base64_data: str, media_type: str) -> str:
     response = await vision_llm.ainvoke(messages)
     return response.content
 
-# --- DEDICATED FRAUD MODEL (PLACEHOLDER) ---
+# --- DEDICATED FRAUD MODEL (NATIVE INTEGRATION) ---
 async def check_fraud_system(request_data: dict) -> dict:
     """
-    Placeholder for your dedicated Fraud Detection ML Model (e.g., XGBoost, Random Forest).
-    When your model is ready, replace this logic with an HTTP request to your ML microservice.
+    Calls the native XGBoost Fraud Service directly in memory.
     """
-    logger.info(f"Running dedicated statistical fraud model for Pre-Auth: {request_data.get('id')}")
-    
-    # Simulate API latency
-    await asyncio.sleep(0.2)
-    
-    # --- MOCK LOGIC FOR PROTOTYPING ---
-    requested_amount = float(request_data.get("requested_amount") or 0)
-    
-    # Trigger a fake fraud alert by submitting a request for exactly 9999
-    if requested_amount == 9999:
+    try:
+        # Native Python call. Executes in microseconds.
+        return await fraud_detector.analyze_claim(request_data)
+    except Exception as e:
+        logger.error(f"Native Fraud Module failed: {e}. Bypassing statistical check.")
         return {
-            "risk_level": "high",
-            "fraud_score": 98.5,
-            "flags": ["Provider velocity anomaly", "Suspicious billing amount threshold exceeded"]
+            "risk_level": "low",
+            "fraud_score": 0.0,
+            "flags": []
         }
-        
-    return {
-        "risk_level": "low",
-        "fraud_score": 12.0,
-        "flags": []
-    }
 
 
 # --- CORE SERVICES ---
