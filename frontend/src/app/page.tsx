@@ -87,9 +87,6 @@ export default function HomePage() {
                   Log In
                 </Link>
               </div>
-              <p className="mt-3 text-xs text-[#9ca3af]">
-                Free for your first 50 claims. No credit card required.
-              </p>
 
               {/* Demo video placeholder */}
               <DemoVideoButton />
@@ -207,9 +204,6 @@ export default function HomePage() {
             Get Started Free
             <ArrowRight className="h-4 w-4" />
           </Link>
-          <p className="mt-3 text-xs text-[#9ca3af]">
-            Free for your first 50 claims. No credit card required.
-          </p>
         </div>
       </section>
 

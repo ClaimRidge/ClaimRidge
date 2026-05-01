@@ -17,35 +17,29 @@ import {
   LogOut,
   Menu,
   X,
-  Building2,
   ChevronRight,
-  Bell,
-  CreditCard,
+  Inbox
 } from "lucide-react";
 
 const NAV_GROUPS = [
   {
-    label: "Operations",
+    label: "Medical Operations",
     items: [
-      { href: "/dashboard/insurance", label: "Dashboard", icon: LayoutDashboard, exact: true },
-      { href: "/dashboard/insurance/claims", label: "Claims", icon: FileSearch },
+      { href: "/dashboard/insurance", label: "Pre-Auth Inbox", icon: Inbox, exact: true },
     ],
   },
   {
-    label: "Network",
+    label: "Knowledge Base",
     items: [
-      { href: "/dashboard/insurance/providers", label: "Providers", icon: Users },
-      { href: "/dashboard/insurance/policies", label: "Policies", icon: Scale },
-      { href: "/dashboard/insurance/payments", label: "Payments", icon: CreditCard },
+      { href: "/dashboard/insurance/policies", label: "Medical Policies (RAG)", icon: Scale },
+      { href: "/dashboard/insurance/providers", label: "Network Providers", icon: Users },
     ],
   },
   {
     label: "Intelligence",
     items: [
-      { href: "/dashboard/insurance/analytics", label: "Analytics", icon: BarChart3 },
-      { href: "/dashboard/insurance/fraud", label: "Fraud Detection", icon: ShieldAlert },
-      { href: "/dashboard/insurance/appeals", label: "Appeals", icon: Scale },
-      { href: "/dashboard/insurance/audit", label: "Compliance", icon: ShieldAlert },
+      { href: "/dashboard/insurance/analytics", label: "Turnaround Analytics", icon: BarChart3 },
+      { href: "/dashboard/insurance/audit", label: "Compliance & Audit", icon: ShieldAlert },
     ],
   },
 ];
@@ -102,13 +96,25 @@ export default function InsurerLayout({ children }: { children: React.ReactNode 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push("/login"); return; }
       setUser(user);
-      const { data: profile } = await supabase
+
+      // Fetch the profile and join with the insurers table to get the company name
+      const { data: profile, error } = await supabase
         .from("profiles")
-        .select("organization_name, account_type")
+        .select(`
+          role,
+          insurer_id,
+          insurers ( name )
+        `)
         .eq("id", user.id)
         .maybeSingle();
-      if (profile?.account_type !== "insurance") { router.push("/dashboard"); return; }
-      setCompanyName(profile.organization_name || "Insurance Partner");
+
+      if (!profile?.insurer_id) { 
+        router.push("/onboarding"); 
+        return; 
+      }
+      
+      // @ts-ignore - Supabase join typing workaround
+      setCompanyName(profile.insurers?.name || "Insurance Partner");
       setAuthorized(true);
       setLoading(false);
     };

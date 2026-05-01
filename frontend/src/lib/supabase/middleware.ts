@@ -57,20 +57,27 @@ export async function updateSession(request: NextRequest) {
   if (user) {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("account_type")
+      .select("insurer_id, role")
       .eq("id", user.id)
       .maybeSingle();
 
-    const isInsurer = profile?.account_type === "insurance";
-    const isProvider = profile?.account_type === "provider";
-    const isDoctor = profile?.account_type === "doctor";
+    const isInsurer = !!profile?.insurer_id;
+    const isDoctor = profile?.role === "doctor";
+    const hasFinishedOnboarding = isInsurer || isDoctor;
 
-    // Redirect authenticated users away from auth pages to their dashboard
+    // Enforce onboarding for all protected routes if not finished
+    if ((isInsurerRoute || isClinicRoute) && !hasFinishedOnboarding && path !== "/onboarding") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/onboarding";
+      return NextResponse.redirect(url);
+    }
+
+    // Redirect authenticated users away from auth pages
     if (isAuthPage) {
       const url = request.nextUrl.clone();
       if (isInsurer) url.pathname = "/dashboard/insurance";
       else if (isDoctor) url.pathname = "/dashboard/doctor";
-      else url.pathname = "/dashboard/provider";
+      else url.pathname = "/onboarding"; // Default to onboarding if not finished
       return NextResponse.redirect(url);
     }
 

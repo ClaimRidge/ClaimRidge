@@ -5,30 +5,18 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { Shield, Building2, Stethoscope, ArrowRight, ArrowLeft, ShieldCheck } from "lucide-react";
-
-type Role = "provider" | "insurance" | "doctor" | null;
+import { Shield, ShieldCheck } from "lucide-react";
 
 export default function OnboardingPage() {
-  const [step, setStep] = useState(1);
-  const [role, setRole] = useState<Role>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState("");
   const [error, setError] = useState("");
   const [user, setUser] = useState<any>(null);
   
   const supabase = createClient();
   const router = useRouter();
 
-  // Step 3: Provider Fields
-  const [providerDetails, setProviderDetails] = useState({
-    legalNameEn: "",
-    legalNameAr: "",
-    licenseNumber: "",
-    address: "",
-    primaryEmail: ""
-  });
-
-  // Step 3: Insurance Fields
+  // Insurer Workspace Details
   const [insuranceDetails, setInsuranceDetails] = useState({
     companyNameEn: "",
     companyNameAr: "",
@@ -36,31 +24,6 @@ export default function OnboardingPage() {
     policyFileBase64: "",
     policyFileName: ""
   });
-
-  // Step 3: Doctor Fields
-  const [doctorDetails, setDoctorDetails] = useState({
-    fullName: "",
-    specialty: "",
-    orgCode: "" // Optional
-  });
-
-  useEffect(() => {
-    // Read URL parameters on mount
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const roleParam = params.get("role");
-      const orgParam = params.get("org");
-
-      if (roleParam === "doctor") {
-        setRole("doctor");
-        setStep(2); // Auto-advance for onboarding
-      }
-      
-      if (orgParam) {
-        setDoctorDetails(prev => ({ ...prev, orgCode: orgParam.toUpperCase() }));
-      }
-    }
-  }, []);
 
   useEffect(() => {
     const checkUser = async () => {
@@ -71,28 +34,19 @@ export default function OnboardingPage() {
       }
       setUser(user);
 
-      // Check if profile already exists and has account_type
+      // Check if profile already exists and is linked to an insurer
       const { data: profile } = await supabase
         .from("profiles")
-        .select("account_type")
+        .select("insurer_id")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (profile?.account_type) {
-        router.push("/dashboard");
+      if (profile?.insurer_id) {
+        router.push("/dashboard/insurance");
       }
     };
     checkUser();
-  }, []);
-
-  const handleNextStep1 = () => {
-    if (!role) {
-      setError("Please select an account type to continue.");
-      return;
-    }
-    setError("");
-    setStep(2);
-  };
+  }, [router, supabase]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,100 +54,77 @@ export default function OnboardingPage() {
     setLoading(true);
 
     try {
-      let profileData: any = {
-        id: user.id,
-        account_type: role,
-      };
-      let parent_org_id = null;
+      setLoadingText("Creating your workspace...");
 
-      // 1. If Doctor, check if they entered an Org Code
-      if (role === "doctor") {
-        if (doctorDetails.orgCode) {
-          const { data: org, error: orgError } = await supabase
-            .from("profiles")
-            .select("id")
-            .eq("org_code", doctorDetails.orgCode.toUpperCase())
-            .single();
-            
-          if (orgError || !org) {
-            setError("Invalid Organization Code. Leave blank to operate as a solo doctor.");
-            setLoading(false);
-            return;
-          }
-          parent_org_id = org.id;
-        }
-
-        profileData = {
-          ...profileData,
-          organization_name: doctorDetails.fullName,
-          parent_org_id: parent_org_id,
-          config_json: { specialty: doctorDetails.specialty }
-        };
-      } 
-      // 2. If Provider (Super Admin), generate an Org Code for them to share
-      else if (role === "provider") {
-        const generatedOrgCode = 'ORG-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-        
-        profileData = {
-          ...profileData,
-          organization_name: providerDetails.legalNameEn,
-          license_number: providerDetails.licenseNumber,
-          contact_email: providerDetails.primaryEmail,
-          org_code: generatedOrgCode, // Save the generated code
-          config_json: {
-            organization_name_ar: providerDetails.legalNameAr,
-            address: providerDetails.address
-          }
-        };
-      } else {
-        // Insurance logic
-        profileData = {
-          ...profileData,
-          organization_name: insuranceDetails.companyNameEn,
+      // 1. Create the Insurer Tenant Workspace (Notice we removed policyFileBase64 from config_json!)
+      const { data: insurer, error: insurerError } = await supabase
+        .from("insurers")
+        .insert({
+          name: insuranceDetails.companyNameEn,
           license_number: insuranceDetails.licenseNumber,
-          policy_file_name: insuranceDetails.policyFileName,
           config_json: {
-            organization_name_ar: insuranceDetails.companyNameAr,
-            policy_file_base64: insuranceDetails.policyFileBase64,
+            company_name_ar: insuranceDetails.companyNameAr,
             policy_file_name: insuranceDetails.policyFileName
           }
-        };
+        })
+        .select("id")
+        .single();
+
+      if (insurerError) {
+        if (insurerError.message.includes("insurers_license_number_key") || insurerError.code === '23505') {
+          throw new Error("This License Number is already registered. Please use a unique license number.");
+        }
+        throw new Error(insurerError.message || "Failed to create Insurer workspace.");
       }
 
-      const { error } = await supabase
+      if (!insurer) {
+        throw new Error("Failed to create Insurer workspace.");
+      }
+
+      // 2. Link the current user to this new Insurer workspace as an admin
+      setLoadingText("Linking user profile...");
+      const { error: profileError } = await supabase
         .from("profiles")
-        .upsert(profileData);
-
-      if (error) {
-        setError(error.message);
-        return;
-      }
-
-      // NEW: Insert into doctor_orgs if they joined an org
-      if (role === "doctor" && parent_org_id) {
-        await supabase.from("doctor_orgs").insert({
-          doctor_id: user.id,
-          org_id: parent_org_id
+        .upsert({
+          id: user.id,
+          insurer_id: insurer.id,
+          role: "admin",
+          contact_email: user.email
         });
+
+      if (profileError) {
+        throw new Error(profileError.message);
       }
 
-      if (role === "insurance" && insuranceDetails.policyFileBase64) {
-        // Wait 1 second to ensure the Supabase record is fully committed
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // 3. Send the Base64 directly to the backend for processing!
+      if (insuranceDetails.policyFileBase64) {
+        setLoadingText("Training AI on your medical policy (this may take a minute)...");
         
         const { data: { session } } = await supabase.auth.getSession();
-        fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/process-policy`, {
+        
+        const processRes = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/process-policy`, {
           method: "POST",
           headers: { 
+            "Content-Type": "application/json",
             "Authorization": `Bearer ${session?.access_token}` 
-          }
-        }).catch(err => console.error("Failed to trigger policy embedding:", err));
+          },
+          body: JSON.stringify({
+            policy_file_base64: insuranceDetails.policyFileBase64
+          })
+        });
+
+        if (!processRes.ok) {
+           console.warn("Policy embedding failed, but workspace was created.");
+        }
       }
 
-      router.push("/dashboard");
-    } catch {
-      setError("An unexpected error occurred. Please try again.");
-    } finally {
+      // 4. Send them straight to the Medical Officer Queue
+      setLoadingText("Redirecting to your Dashboard...");
+      router.push("/dashboard/insurance");
+      router.refresh();
+      
+    } catch (err: any) {
+      setError(err.message || "An unexpected error occurred. Please try again.");
       setLoading(false);
     }
   };
@@ -202,16 +133,16 @@ export default function OnboardingPage() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-[#f9fafb]">
-      <div className={`w-full ${step === 2 ? "max-w-2xl" : "max-w-md"}`}>
+      <div className="w-full max-w-2xl">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl mb-4">
-            <Shield className="h-6 w-6 text-[#16a34a]" />
+          <div className="inline-flex items-center justify-center w-12 h-12 bg-[#0A1628] border border-[#0A1628]/10 rounded-xl mb-4">
+            <Shield className="h-6 w-6 text-white" />
           </div>
           <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-[#0a0a0a]">
-            {step === 1 ? "Complete your profile" : "Tell us more"}
+            Set up your Workspace
           </h1>
           <p className="text-[#6b7280] mt-1">
-            {step === 1 ? "Which type of user are you?" : "We need a few more details to set up your account."}
+            Enter your insurance company details to configure your AI Pre-Auth Engine.
           </p>
         </div>
 
@@ -222,211 +153,87 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {/* STEP 1: CHOOSE ROLE */}
-          {step === 1 && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 gap-4">
-                <button
-                  type="button"
-                  onClick={() => setRole("provider")}
-                  className={`flex items-start gap-4 p-4 rounded-xl border-2 text-left transition-all ${
-                    role === "provider"
-                      ? "border-[#16a34a] bg-[#f0fdf4]"
-                      : "border-gray-200 hover:border-[#16a34a]/30 hover:bg-gray-50"
-                  }`}
-                >
-                  <div className={`p-3 rounded-lg ${role === "provider" ? "bg-[#16a34a] text-white" : "bg-gray-100 text-gray-500"}`}>
-                    <Stethoscope className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h3 className={`font-bold ${role === "provider" ? "text-[#16a34a]" : "text-gray-900"}`}>Provider (Clinic / Hospital)</h3>
-                    <p className="text-sm text-gray-500 mt-1">Submit claims and track reimbursements.</p>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setRole("insurance")}
-                  className={`flex items-start gap-4 p-4 rounded-xl border-2 text-left transition-all ${
-                    role === "insurance"
-                      ? "border-[#16a34a] bg-[#f0fdf4]"
-                      : "border-gray-200 hover:border-[#16a34a]/30 hover:bg-gray-50"
-                  }`}
-                >
-                  <div className={`p-3 rounded-lg ${role === "insurance" ? "bg-[#16a34a] text-white" : "bg-gray-100 text-gray-500"}`}>
-                    <Building2 className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h3 className={`font-bold ${role === "insurance" ? "text-[#16a34a]" : "text-gray-900"}`}>Insurance Company (Payer)</h3>
-                    <p className="text-sm text-gray-500 mt-1">Receive claims and manage adjudication rules.</p>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setRole("doctor")}
-                  className={`flex items-start gap-4 p-4 rounded-xl border-2 text-left transition-all ${
-                    role === "doctor"
-                      ? "border-[#16a34a] bg-[#f0fdf4]"
-                      : "border-gray-200 hover:border-[#16a34a]/30 hover:bg-gray-50"
-                  }`}
-                >
-                  <div className={`p-3 rounded-lg ${role === "doctor" ? "bg-[#16a34a] text-white" : "bg-gray-100 text-gray-500"}`}>
-                    <Stethoscope className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h3 className={`font-bold ${role === "doctor" ? "text-[#16a34a]" : "text-gray-900"}`}>Doctor (Individual)</h3>
-                    <p className="text-sm text-gray-500 mt-1">Link with a hospital or operate as a solo practitioner.</p>
-                  </div>
-                </button>
-              </div>
-              <Button onClick={handleNextStep1} className="w-full" size="lg">
-                Next <ArrowRight className="h-4 w-4 ml-2" />
-              </Button>
-            </div>
-          )}
-
-          {/* STEP 2: DETAILS */}
-          {step === 2 && role === "provider" && (
-            <form onSubmit={handleSubmit} className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-gray-900 border-b pb-2">Practice Identity</h3>
-                  <Input id="legalNameEn" label="Legal Name (English)" value={providerDetails.legalNameEn} onChange={e => setProviderDetails({...providerDetails, legalNameEn: e.target.value})} required />
-                  <Input id="legalNameAr" label="Legal Name (Arabic)" value={providerDetails.legalNameAr} onChange={e => setProviderDetails({...providerDetails, legalNameAr: e.target.value})} />
-                </div>
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-gray-900 border-b pb-2">Location & Contact</h3>
-                  <Input id="address" label="Address" value={providerDetails.address} onChange={e => setProviderDetails({...providerDetails, address: e.target.value})} required />
-                  <Input id="primaryEmail" label="Administrative Email" type="email" value={providerDetails.primaryEmail} onChange={e => setProviderDetails({...providerDetails, primaryEmail: e.target.value})} required />
-                </div>
-              </div>
-
-              <div className="max-w-md mx-auto pt-4 border-t border-gray-100">
+          <form onSubmit={handleSubmit} className="space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b border-gray-100">
+              <div className="space-y-4">
+                <h3 className="font-semibold text-gray-900">Company Identity</h3>
                 <Input 
-                  id="licenseNumber" 
-                  label="Facility License Number" 
-                  value={providerDetails.licenseNumber} 
-                  onChange={e => setProviderDetails({...providerDetails, licenseNumber: e.target.value})} 
+                  id="companyNameEn" 
+                  label="Company Name (English)" 
+                  value={insuranceDetails.companyNameEn} 
+                  onChange={e => setInsuranceDetails({...insuranceDetails, companyNameEn: e.target.value})} 
                   required 
-                  className="text-center"
+                  placeholder="e.g. GIG Jordan"
+                  disabled={loading}
+                />
+                <Input 
+                  id="companyNameAr" 
+                  label="Company Name (Arabic)" 
+                  value={insuranceDetails.companyNameAr} 
+                  onChange={e => setInsuranceDetails({...insuranceDetails, companyNameAr: e.target.value})} 
+                  placeholder="e.g. شركة التأمين"
                 />
               </div>
-
-              <div className="flex gap-4">
-                <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>
-                <Button type="submit" loading={loading} className="flex-1">Finish Setup</Button>
+              <div className="space-y-4">
+                <h3 className="font-semibold text-gray-900">Legal Verification</h3>
+                <Input 
+                  id="licenseNumberIns" 
+                  label="License Number" 
+                  value={insuranceDetails.licenseNumber} 
+                  onChange={e => setInsuranceDetails({...insuranceDetails, licenseNumber: e.target.value})} 
+                  required 
+                  placeholder="e.g. INS-1004"
+                  disabled={loading}
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Enter your official regulatory license number to verify your organization. This must be unique.
+                </p>
               </div>
-            </form>
-          )}
+            </div>
 
-          {step === 2 && role === "insurance" && (
-            <form onSubmit={handleSubmit} className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b border-gray-100">
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-gray-900">Company Identity</h3>
-                  <Input id="companyNameEn" label="Company Name (English)" value={insuranceDetails.companyNameEn} onChange={e => setInsuranceDetails({...insuranceDetails, companyNameEn: e.target.value})} required />
-                  <Input id="companyNameAr" label="Company Name (Arabic)" value={insuranceDetails.companyNameAr} onChange={e => setInsuranceDetails({...insuranceDetails, companyNameAr: e.target.value})} />
-                </div>
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-gray-900">Legal Verification</h3>
-                  <Input id="licenseNumberIns" label="License Number" value={insuranceDetails.licenseNumber} onChange={e => setInsuranceDetails({...insuranceDetails, licenseNumber: e.target.value})} required />
-                  <p className="text-xs text-gray-500 mt-2">Enter your official regulatory license number to verify your organization.</p>
-                </div>
-              </div>
-
-              <div className="bg-[#fcfdfc] border border-[#f0fdf4] rounded-2xl p-6 shadow-sm">
-                <label className="block text-base font-bold text-[#0a0a0a] mb-1">
-                  Policy & Member Data Rules <span className="text-gray-400 font-normal text-sm">(Optional)</span>
-                </label>
-                <p className="text-sm text-[#6b7280] mb-4">Upload your policy guidelines as a PDF. This helps our AI automate your claim reviews.</p>
-                
-                <div className="relative">
-                  <input 
-                    type="file" 
-                    accept="application/pdf"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          const base64 = (reader.result as string).split(',')[1];
-                          setInsuranceDetails(prev => ({ 
-                            ...prev, 
-                            policyFileBase64: base64,
-                            policyFileName: file.name
-                          }));
-                        };
-                        reader.readAsDataURL(file);
-                      }
-                    }}
-                    className="w-full px-4 py-3 bg-white border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] rounded-xl text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#f0fdf4] file:text-[#16a34a] hover:file:bg-[#dcfce7] cursor-pointer transition-all"
-                  />
-                  {insuranceDetails.policyFileName && (
-                    <p className="mt-3 text-sm text-[#16a34a] font-semibold flex items-center gap-1.5">
-                      <ShieldCheck className="h-4 w-4" />
-                      {insuranceDetails.policyFileName} ready
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex gap-4">
-                <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>
-                <Button type="submit" loading={loading} className="flex-1">Finish Setup</Button>
-              </div>
-            </form>
-          )}
-
-          {step === 2 && role === "doctor" && (
-            <form onSubmit={handleSubmit} className="space-y-8">
-              <div className="space-y-6">
-                <div>
-                  <h3 className="font-semibold text-gray-900 border-b pb-2 mb-4">Professional Identity</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Input 
-                      id="fullName" 
-                      label="Full Legal Name" 
-                      value={doctorDetails.fullName} 
-                      onChange={e => setDoctorDetails({...doctorDetails, fullName: e.target.value})} 
-                      required 
-                      placeholder="Dr. John Doe"
-                    />
-                    <Input 
-                      id="specialty" 
-                      label="Medical Specialty" 
-                      value={doctorDetails.specialty} 
-                      onChange={e => setDoctorDetails({...doctorDetails, specialty: e.target.value})} 
-                      required 
-                      placeholder="e.g. General Practice, Cardiology"
-                    />
-                  </div>
-                </div>
-
-                <div className="bg-[#f9fafb] border border-[#e5e7eb] rounded-2xl p-6">
-                  <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
-                    <Building2 className="h-4 w-4 text-[#16a34a]" />
-                    Hospital Affiliation (Optional)
-                  </h3>
-                  <p className="text-sm text-[#6b7280] mb-4">
-                    If you operate within a hospital network, enter their organization code below to link your account.
+            <div className="bg-[#fcfdfc] border border-[#f0fdf4] rounded-2xl p-6 shadow-sm">
+              <label className="block text-base font-bold text-[#0a0a0a] mb-1">
+                Medical Guidelines & Policy Rules <span className="text-gray-400 font-normal text-sm">(Optional)</span>
+              </label>
+              <p className="text-sm text-[#6b7280] mb-4">
+                Upload your policy guidelines as a PDF or Word document. ClaimRidge will use this to automatically evaluate incoming pre-auths.
+              </p>
+              
+              <div className="relative">
+                <input 
+                  type="file" 
+                  accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  disabled={loading}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        const base64 = (reader.result as string).split(',')[1];
+                        setInsuranceDetails(prev => ({ 
+                          ...prev, 
+                          policyFileBase64: base64,
+                          policyFileName: file.name
+                        }));
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                  className="w-full px-4 py-3 bg-white border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] rounded-xl text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#f0fdf4] file:text-[#16a34a] hover:file:bg-[#dcfce7] cursor-pointer transition-all disabled:opacity-50"
+                />
+                {insuranceDetails.policyFileName && (
+                  <p className="mt-3 text-sm text-[#16a34a] font-semibold flex items-center gap-1.5">
+                    <ShieldCheck className="h-4 w-4" />
+                    {insuranceDetails.policyFileName} ready
                   </p>
-                  <Input 
-                    id="orgCode" 
-                    label="Organization Code" 
-                    value={doctorDetails.orgCode} 
-                    onChange={e => setDoctorDetails({...doctorDetails, orgCode: e.target.value.toUpperCase()})} 
-                    placeholder="e.g. ORG-XXXXXX"
-                    className="max-w-xs font-mono tracking-widest"
-                  />
-                </div>
+                )}
               </div>
-
-              <div className="flex gap-4">
-                <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>
-                <Button type="submit" loading={loading} className="flex-1">Finish Setup</Button>
-              </div>
-            </form>
-          )}
+            </div>
+            
+            <Button type="submit" loading={loading} className="w-full" size="lg">
+              {loading ? (loadingText || "Processing...") : "Finish Setup"}
+            </Button>
+          </form>
         </div>
       </div>
     </div>

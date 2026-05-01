@@ -1,144 +1,68 @@
+import io
 import asyncio
 import json
 import logging
 import re
 import base64
-import time
 import pypdfium2 as pdfium
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from docx import Document
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import PydanticOutputParser
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from core.config import Config
 from core.database import supabase
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-# --- 1. PYDANTIC SCHEMAS ---
-class FieldString(BaseModel):
-    value: str = Field(default="", description="The extracted text. Empty string if not found.")
-    confidence: int = Field(default=0, description="Confidence score 0-100. 0 if not found.")
+# --- PROMPTS ---
+PRE_AUTH_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert Medical Officer and Fraud Detection agent for a health insurance company.
+Your job is to review a pre-authorisation request based on multiple clinical documents submitted by the provider.
 
-class FieldFloat(BaseModel):
-    value: float = Field(default=0.0, description="The extracted numeric value. 0.0 if not found.")
-    confidence: int = Field(default=0, description="Confidence score 0-100. 0 if not found.")
+## EXPECTED CLAIM DETAILS (Submitted via Portal)
+- Patient Name: **{expected_patient_name}**
+- Patient ID: **{expected_patient_id}**
+- Provider Name: **{expected_provider_name}**
 
-class FieldStringList(BaseModel):
-    value: List[str] = Field(default_factory=list, description="List of strings. Empty list if not found.")
-    confidence: int = Field(default=0, description="Confidence score 0-100. 0 if not found.")
+## PAYER POLICY RULES (RAG Context)
+{policy_rules}
 
-class ClaimExtractionResult(BaseModel):
-    patient_name: FieldString
-    patient_id: FieldString
-    date_of_service: FieldString = Field(description="Format YYYY-MM-DD")
-    provider_name: FieldString
-    provider_id: FieldString
-    payer_name: FieldString
-    member_id: FieldString
-    primary_diagnosis: FieldString = Field(description="Primary ICD-10 code")
-    additional_diagnoses: FieldStringList = Field(description="Additional ICD-10 codes")
-    primary_procedure: FieldString = Field(description="Primary CPT/HCPCS code")
-    additional_procedures: FieldStringList = Field(description="Additional CPT/HCPCS codes")
-    billed_amount: FieldFloat
-    additional_notes: FieldString = Field(description="Any extra notes. Empty string if none.")
+## YOUR TASK & CRITICAL RULES
+1. **IDENTITY VERIFICATION (STRICT)**: You MUST verify that the patient name in the clinical documents matches the "Expected Claim Details" above. Small spelling variations are okay, but if the document belongs to a different person, you MUST "deny" or "escalate" with the rationale "Identity mismatch: Document belongs to a different patient."
+2. **CLINICAL EVIDENCE CHECK**: Analyze the structured clinical data extracted from the documents. If the documents are just blank forms or generic instructions with no actual findings, "deny" the request for "Insufficient clinical information."
+3. **POLICY ADJUDICATION**: Cross-reference the clinical findings and requested procedures against the Payer Policy Rules.
+4. **DECISION**: Render a decision: "approve", "deny", or "escalate".
+   - **ESCALATE** if: procedures are high-cost (>5000 units), documents are contradictory, or policy rules are ambiguous.
 
-parser = PydanticOutputParser(pydantic_object=ClaimExtractionResult)
-
-# --- 2. PROMPTS ---
-EXTRACTION_PROMPT = """You are an expert medical claims parser. 
-Extract the data directly from the provided image.
-
-CRITICAL RULES:
-1. NO HALLUCINATIONS: If a field is NOT clearly present in the image, set its value to "" (or 0) and its confidence to 0. Do not invent notes or IDs.
-2. CONFIDENCE SCORES: Rate your confidence from 0 to 100 based on how clearly you can read the text.
-3. Normalize dates to YYYY-MM-DD.
-
-{format_instructions}
-"""
-
-SCRUB_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert medical claims scrubbing engine. You analyze medical insurance claims with the rigor of a senior medical biller and return detailed, actionable feedback.
-
-{unregistered_warning}
-
-## Payer-Specific Policy Rules (CRITICAL)
-Here are the specific policy rules retrieved from this Payer's handbook. You MUST apply these rules to this claim. 
-<payer_rules>
-{policy_context}
-</payer_rules>
-
-## Response Format
-Return ONLY valid JSON with this exact structure:
+Respond ONLY with valid JSON in this exact format:
 {{
-  "status": "clean" | "warnings" | "errors",
-  "overall_score": <number 0-100>,
-  "issues": [
-    {{
-      "field": "<exact field name>",
-      "severity": "error" | "warning" | "info",
-      "message": "<specific problem>",
-      "suggestion": "<exact fix>"
-    }}
-  ],
-  "corrected_claim": {{ <corrected version of the input> }},
-  "recommendations": ["<actionable recommendation strings>"],
-  "applied_policy_rules": ["<Quote the exact rules from the payer_rules section that you used to evaluate this claim>"]
+    "decision": "approve" | "deny" | "escalate",
+    "rationale": "Provide a clear, clinical, and policy-based justification for your decision. Address identity verification and medical necessity specifically."
 }}
 """
 
-MEDICAL_REVIEW_PROMPT = """You are ClaimRidge AI, acting as a Chief Medical Officer and Claims Adjudicator for a health insurance company in the MENA region.
-Your task is to review a medical claim specifically for 'Medical Necessity' and 'Clinical Appropriateness' based on standard global clinical guidelines (WHO, NICE, AHA) and local GCC/Levant practices.
-
-## Your Goal
-Read the diagnosis codes (ICD-10) and procedure codes (CPT). Determine if the requested procedures are a logical, medically necessary, and standard-of-care treatment or diagnostic step for the given diagnoses.
-
-## Red Flags to Watch For
-1. Upcoding: Using a highly complex/expensive procedure code when a simpler one is standard (e.g., billing a Level 5 ER visit for a common cold).
-2. Unbundling: Billing separately for procedures that should be grouped together.
-3. Diagnostic Mismatch: Ordering procedures entirely unrelated to the diagnosis (e.g., a knee MRI for a sinus infection).
-4. Step-Therapy Violations: Jumping straight to surgery or expensive imaging (MRI) without evidence of prior conservative treatment (X-ray, physical therapy, medication) where guidelines require it.
-
-## Output Format
-You MUST output a brief, highly professional medical report in Markdown format.
-Use EXACTLY this structure:
-
-### Clinical Decision Recommendation
-**[ APPROVE ]** OR **[ DENY ]** OR **[ INVESTIGATE FURTHER ]**
-
-### Clinical Reasoning
-[Provide 1-2 concise paragraphs explaining your medical rationale. Why is this medically necessary or unnecessary? Point out specific mismatches between the ICD-10 and CPT codes if they exist.]
-
-### Guideline Context
-[Briefly mention standard medical protocols that support your reasoning. e.g., "According to standard radiological guidelines, an MRI of the lumbar spine is not indicated as a first-line diagnostic tool for acute lower back pain without neurological deficits..."]
-"""
-
-# --- 3. HELPER FUNCTIONS & LLM INITIALIZATION ---
-
+# --- LLM INITIALIZATION ---
 def get_vision_llm():
-    """Initializes the native Google Gemini VLM for extraction."""
     return ChatGoogleGenerativeAI(
-        model=Config.OCR_MODEL,
-        google_api_key=Config.GEMINI_API_KEY,
-        temperature=0.0
+        model=Config.OCR_MODEL, 
+        google_api_key=Config.GEMINI_API_KEY, 
+        temperature=0.1
     )
 
-def get_llm(model_name: str = Config.LLM_MODEL):
-    """Initializes Groq for standard text tasks (Scrubbing, Recommendations)."""
+def get_llm():
     return ChatGroq(
-        api_key=Config.GROQ_API_KEY,
-        model_name=model_name,
-        temperature=0.3,
+        api_key=Config.GROQ_API_KEY, 
+        model_name=Config.LLM_MODEL, 
+        temperature=0.1
     )
 
 def get_embeddings():
-    """Initializes Google's fast text embedding model."""
     return GoogleGenerativeAIEmbeddings(
         model="models/gemini-embedding-001", 
         google_api_key=Config.GEMINI_API_KEY
     )
 
+# --- UTILITIES ---
 def extract_json_from_text(text: str) -> str:
     text = re.sub(r'```[\w]*\s*\n?', '', text)
     start_idx = text.find('{')
@@ -147,27 +71,217 @@ def extract_json_from_text(text: str) -> str:
         return text[start_idx:end_idx + 1]
     return text.strip()
 
-async def process_and_embed_policy_pdf(insurer_id: str, base64_pdf: str):
-    """Called once when an insurer uploads their policy. Chunks the PDF and saves to Supabase."""
-    logger.info(f"Starting PDF processing for insurer {insurer_id}")
+async def extract_text_from_file(base64_data: str, media_type: str) -> str:
+    """Extracts text from PDF, Images, or Word documents with high-fidelity formatting."""
     
-    # 1. Decode and read PDF
-    pdf_bytes = base64.b64decode(base64_pdf)
-    logger.info(f"PDF decoded: {len(pdf_bytes)} bytes.")
-    pdf = pdfium.PdfDocument(pdf_bytes)
+    # 1. Handle Word Documents (.docx)
+    if "word" in media_type or "officedocument" in media_type:
+        try:
+            doc_bytes = base64.b64decode(base64_data)
+            doc = Document(io.BytesIO(doc_bytes))
+            full_text = []
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    full_text.append(para.text)
+            return "\n".join(full_text)
+        except Exception as e:
+            logger.error(f"Failed to extract text from Word document: {e}")
+            return "Error: Could not read Word document."
+
+    # 2. Handle PDFs and Images via Gemini Vision OCR
+    vision_llm = get_vision_llm()
+    
+    # ENHANCED EXTRACTION PROMPT
+    vision_prompt = """
+    You are a world-class medical document transcriptionist. 
+    Your goal is to extract clinical data from the provided image/document and format it for EXTREME READABILITY.
+
+    ### FORMATTING RULES (STRICT):
+    1. MAIN TITLES: Put category names in bold followed by a colon (e.g., **Patient Identification:**).
+    2. DATA FIELDS: List sub-titles (labels) followed by their info on separate lines under the main title.
+    3. LINE BREAKS: Use a double line break between categories and a single line break between every data field.
+       Example:
+       **Patient Identification:**
+       Medicare Coverage: Yes
+       Patient Name: DOE, JOHN S.
+
+       **Insured Information:**
+       Insured's I.D. Number: 987 65 4321A
+    
+    4. CLEAN UP: IGNORE all boilerplate instructions, footer codes, and "Leave Blank" fields.
+    5. NO BOILERPLATE: Do not include text like "DO NOT WRITE IN THIS SPACE" or generic form titles.
+
+    If the document is a blank form with no handwritten or typed data, output exactly: "[NO CLINICAL DATA FOUND - BLANK FORM]"
+    """
+    
+    messages = [
+        HumanMessage(content=[
+            {"type": "text", "text": vision_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{base64_data}"}}
+        ])
+    ]
+    response = await vision_llm.ainvoke(messages)
+    return response.content
+
+# --- DEDICATED FRAUD MODEL (PLACEHOLDER) ---
+async def check_fraud_system(request_data: dict) -> dict:
+    """
+    Placeholder for your dedicated Fraud Detection ML Model (e.g., XGBoost, Random Forest).
+    When your model is ready, replace this logic with an HTTP request to your ML microservice.
+    """
+    logger.info(f"Running dedicated statistical fraud model for Pre-Auth: {request_data.get('id')}")
+    
+    # Simulate API latency
+    await asyncio.sleep(0.2)
+    
+    # --- MOCK LOGIC FOR PROTOTYPING ---
+    requested_amount = float(request_data.get("requested_amount") or 0)
+    
+    # Trigger a fake fraud alert by submitting a request for exactly 9999
+    if requested_amount == 9999:
+        return {
+            "risk_level": "high",
+            "fraud_score": 98.5,
+            "flags": ["Provider velocity anomaly", "Suspicious billing amount threshold exceeded"]
+        }
+        
+    return {
+        "risk_level": "low",
+        "fraud_score": 12.0,
+        "flags": []
+    }
+
+
+# --- CORE SERVICES ---
+async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
+    """Orchestrates the 2-Layer Defense: Fraud Model -> RAG Policy -> LLM Clinical Triage."""
+    logger.info(f"Starting Evaluation Pipeline for Pre-Auth: {pre_auth_id}")
+    
+    # 1. Fetch the Request Details
+    req_res = supabase.table("pre_auth_requests").select("*").eq("id", pre_auth_id).execute()
+    if not req_res.data:
+        logger.error(f"Pre-auth request {pre_auth_id} not found.")
+        return
+    request_data = req_res.data[0]
+
+    # ==========================================
+    # LAYER 1: STATISTICAL FRAUD DETECTION
+    # ==========================================
+    fraud_result = await check_fraud_system(request_data)
+    
+    if fraud_result["risk_level"] == "high":
+        flags_str = ", ".join(fraud_result["flags"])
+        rationale = f"ESCALATED BY ANTI-FRAUD SYSTEM (Risk Score: {fraud_result['fraud_score']}%). Flags detected: {flags_str}."
+        
+        supabase.table("pre_auth_requests").update({
+            "status": "escalated",
+            "ai_decision": "escalate",
+            "ai_rationale": rationale
+        }).eq("id", pre_auth_id).execute()
+        
+        logger.warning(f"Pre-Auth {pre_auth_id} halted by Fraud System. Esculated to human.")
+        return # Halt processing immediately. No need to waste LLM tokens.
+
+    # ==========================================
+    # LAYER 2: CLINICAL LLM TRIAGE
+    # ==========================================
+    # 2. Fetch all documents for this case
+    docs_res = supabase.table("pre_auth_documents").select("file_name, extracted_text").eq("pre_auth_id", pre_auth_id).execute()
+    
+    if not docs_res.data:
+        logger.error("No documents found for this pre-auth.")
+        return
+
+    # 3. Combine all documents into one context window
+    combined_clinical_context = "=== CLINICAL DOCUMENTS ===\n\n"
+    for doc in docs_res.data:
+        combined_clinical_context += f"--- Document: {doc['file_name']} ---\n{doc['extracted_text']}\n\n"
+
+    # 4. RAG: Fetch relevant policy rules
+    embeddings_model = get_embeddings()
+    query_vector = embeddings_model.embed_query(combined_clinical_context[:2000]) 
+    
+    policy_res = supabase.rpc("match_policy_rules", {
+        "query_embedding": query_vector,
+        "match_threshold": 0.3,
+        "match_count": 5,
+        "p_insurer_id": insurer_id
+    }).execute()
+    
+    policy_rules = "Standard medical necessity guidelines apply."
+    if policy_res.data:
+        policy_rules = "\n".join([match["content"] for match in policy_res.data])
+
+    # 5. Ask the LLM to reason (Injecting Expected Details to prevent Identity Fraud)
+    llm = get_llm()
+    prompt = PRE_AUTH_SYSTEM_PROMPT.format(
+        expected_patient_name=request_data.get("patient_name", "Unknown"),
+        expected_patient_id=request_data.get("patient_id", "Unknown"),
+        expected_provider_name=request_data.get("provider_name", "Unknown"),
+        policy_rules=policy_rules
+    )
+    
+    messages = [
+        SystemMessage(content=prompt),
+        HumanMessage(content=combined_clinical_context)
+    ]
+    
+    response = await llm.ainvoke(messages)
+    json_str = extract_json_from_text(response.content)
+    
+    try:
+        result = json.loads(json_str)
+        decision = result.get("decision", "escalate")
+        rationale = result.get("rationale", "Failed to parse rationale.")
+        
+        # 6. Update Database
+        new_status = 'escalated' if decision == 'escalate' else decision
+        
+        supabase.table("pre_auth_requests").update({
+            "status": new_status,
+            "ai_decision": decision,
+            "ai_rationale": rationale
+        }).eq("id", pre_auth_id).execute()
+        
+        logger.info(f"Pre-Auth {pre_auth_id} evaluated. Decision: {decision}")
+        
+    except Exception as e:
+        logger.error(f"Failed to parse AI Pre-Auth Decision: {e}")
+        supabase.table("pre_auth_requests").update({
+            "status": "escalated",
+            "ai_decision": "escalate",
+            "ai_rationale": f"System error during AI evaluation. Manual review required."
+        }).eq("id", pre_auth_id).execute()
+
+async def process_and_embed_policy_file(insurer_id: str, base64_data: str, file_name: str = ""):
+    """Called once when an insurer uploads their policy. Chunks the PDF/Word and saves to Supabase."""
+    logger.info(f"Starting policy file processing for insurer {insurer_id}")
     
     full_text = ""
-    for page in pdf:
-        text_page = page.get_textpage()
-        full_text += text_page.get_text_range() + "\n\n"
+    is_word = file_name.lower().endswith(".docx") or "officedocument" in base64_data[:50] 
+
+    try:
+        if is_word:
+            # Handle Word
+            doc_bytes = base64.b64decode(base64_data)
+            doc = Document(io.BytesIO(doc_bytes))
+            full_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        else:
+            # Handle PDF (Default)
+            pdf_bytes = base64.b64decode(base64_data)
+            pdf = pdfium.PdfDocument(pdf_bytes)
+            for page in pdf:
+                text_page = page.get_textpage()
+                full_text += text_page.get_text_range() + "\n\n"
+    except Exception as e:
+        logger.error(f"Failed to parse policy file: {e}")
+        raise ValueError(f"Could not read the uploaded file. Please ensure it is a valid PDF or .docx file. Error: {str(e)}")
         
     if not full_text.strip():
-        logger.warning(f"Insurer {insurer_id} uploaded a PDF with no readable text.")
-        raise ValueError("The uploaded PDF contains no readable text. If it is a scanned image, please upload a text-searchable PDF.")
+        logger.warning(f"Insurer {insurer_id} uploaded a file with no readable text.")
+        raise ValueError("The uploaded file contains no readable text.")
 
-    logger.info(f"Successfully extracted {len(full_text)} characters from policy PDF for insurer {insurer_id}.")
-
-    # 2. INCREASED CHUNK SIZE: Larger chunks = fewer API calls to Google
+    # 2. Chunk text
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=2000,
         chunk_overlap=200,
@@ -181,18 +295,17 @@ async def process_and_embed_policy_pdf(insurer_id: str, base64_pdf: str):
     # 3. Clear old policy chunks for this insurer
     supabase.table("policy_chunks").delete().eq("insurer_id", insurer_id).execute()
     
-    # 4. Embed and insert in safe batches
+    # 4. Embed and insert in safe batches to respect rate limits
     batch_size = 50 
     for i in range(0, len(chunks), batch_size):
         batch_chunks = chunks[i:i+batch_size]
         
-        # Get embeddings for the batch
         try:
             vectors = embeddings_model.embed_documents(batch_chunks)
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 logger.warning("Rate limit hit during embedding. Retrying in 10 seconds...")
-                await asyncio.sleep(10) # Increased backoff time just to be safe
+                await asyncio.sleep(10) 
                 vectors = embeddings_model.embed_documents(batch_chunks)
             else:
                 raise e
@@ -205,154 +318,9 @@ async def process_and_embed_policy_pdf(insurer_id: str, base64_pdf: str):
                 "embedding": vector
             })
             
-        # Insert into Supabase
-        res = supabase.table("policy_chunks").insert(payload).execute()
-        if not res.data:
-            logger.warning(f"Batch {i//batch_size + 1} insert may have failed.")
-        else:
-            logger.info(f"Inserted batch {i//batch_size + 1} into database.")
+        supabase.table("policy_chunks").insert(payload).execute()
+        logger.info(f"Inserted batch {i//batch_size + 1} into database.")
         
-        # INCREASED DELAY to respect Google's Free Tier Rate Limits (100 RPM)
         await asyncio.sleep(3)
         
-    logger.info(f"Finished processing policy for insurer {insurer_id}. Total {len(chunks)} chunks saved to database.")
-    
-    # 5. Clean up the profile to save space (PDF is now in policy_chunks)
-    try:
-        profile_res = supabase.table("profiles").select("config_json").eq("id", insurer_id).execute()
-        if profile_res.data:
-            config = profile_res.data[0].get("config_json", {})
-            if "policy_file_base64" in config:
-                del config["policy_file_base64"]
-                supabase.table("profiles").update({"config_json": config}).eq("id", insurer_id).execute()
-                logger.info(f"Cleaned up raw PDF base64 from insurer {insurer_id} profile.")
-    except Exception as e:
-        logger.warning(f"Failed to clean up profile after policy processing: {e}")
-
-async def extract_claim_from_document(file_base64: str, media_type: str) -> dict:
-    """Single-step extraction: Passes image directly to Gemini, getting strict JSON back instantly."""
-    vision_llm = get_vision_llm()
-    
-    # Format the prompt with the Pydantic JSON instructions
-    prompt_text = EXTRACTION_PROMPT.format(format_instructions=parser.get_format_instructions())
-    image_data_url = f"data:{media_type};base64,{file_base64}"
-    
-    messages = [
-        HumanMessage(content=[
-            {"type": "text", "text": prompt_text},
-            {"type": "image_url", "image_url": {"url": image_data_url}}
-        ])
-    ]
-    
-    logger.info(f"Calling Fast Vision Model ({Config.OCR_MODEL}) for 1-step extraction...")
-    
-    try:
-        response = await vision_llm.ainvoke(messages)
-        # Parse the raw string response into our strict Pydantic model
-        result = parser.parse(response.content)
-        return result.model_dump()
-        
-    except Exception as e:
-        logger.error(f"Single-step extraction failed: {str(e)}")
-        raise ValueError("The AI failed to format the document properly. Please re-upload.") from e
-
-async def scrub_claim(claim_data: dict, registered_payer_id: str = None) -> dict:
-    llm = get_llm()
-    claim_json_str = json.dumps(claim_data, indent=2)
-    
-    unregistered_warning = ""
-    policy_context = "No specific payer rules found. Use standard medical billing guidelines."
-    retrieved_chunks = []
-
-    if registered_payer_id:
-        try:
-            search_query = f"Rules for Diagnoses: {', '.join(claim_data.get('diagnosis_codes', []))} and Procedures: {', '.join(claim_data.get('procedure_codes', []))}"
-            embeddings_model = get_embeddings()
-            query_vector = embeddings_model.embed_query(search_query)
-            
-            res = supabase.rpc("match_policy_rules", {
-                "query_embedding": query_vector,
-                "match_threshold": 0.4,
-                "match_count": 4,
-                "p_insurer_id": registered_payer_id
-            }).execute()
-            
-            if res.data and len(res.data) > 0:
-                retrieved_chunks = [match["content"] for match in res.data]
-                logger.info(f"Retrieved {len(retrieved_chunks)} policy rules from vector store for payer {registered_payer_id}.")
-                policy_context = "\n---\n".join(retrieved_chunks)
-            else:
-                logger.info(f"No matching policy rules found for payer {registered_payer_id} with current claim codes.")
-        except Exception as e:
-            logger.error(f"RAG retrieval failed: {e}")
-    else:
-        unregistered_warning = """... (keep your existing warning) ..."""
-
-    formatted_system_prompt = SCRUB_SYSTEM_PROMPT.format(
-        unregistered_warning=unregistered_warning,
-        policy_context=policy_context
-    )
-    
-    messages = [
-        SystemMessage(content=formatted_system_prompt),
-        HumanMessage(content=f"Analyze and scrub the following medical claim:\n\n{claim_json_str}")
-    ]
-    
-    response = await llm.ainvoke(messages)
-    json_str = extract_json_from_text(response.content)
-    
-    try:
-        result = json.loads(json_str)
-        result["retrieved_sources"] = retrieved_chunks
-        return result
-    except Exception as e:
-        logger.error(f"Failed to parse scrub JSON: {str(e)}")
-        raise ValueError("AI returned invalid JSON during scrubbing.") from e
-
-async def generate_medical_recommendation(claim_data: dict) -> str:
-    """
-    Analyzes claim codes against clinical guidelines to generate a medical necessity recommendation.
-    """
-    diagnoses = ", ".join(claim_data.get("diagnosis_codes", []))
-    procedures = ", ".join(claim_data.get("procedure_codes", []))
-    patient_name = claim_data.get('patient_name', 'Unknown')
-    amount = claim_data.get('billed_amount', claim_data.get('total_billed', '0'))
-    
-    logger.info(f"Starting medical review for patient: {patient_name}")
-
-    if isinstance(diagnoses, list):
-        diagnoses = ", ".join([str(d) for d in diagnoses if d])
-    if isinstance(procedures, list):
-        procedures = ", ".join([str(p) for p in procedures if p])
-
-    prompt = f"""
-    You are an expert Chief Medical Officer and Claims Adjudicator for a health insurance company.
-    Your task is to review the following medical claim for 'Medical Necessity' based on standard clinical guidelines (WHO, NICE, AHA, etc.).
-    
-    CLAIM DETAILS:
-    - Patient Name: {patient_name}
-    - Diagnosis Codes (ICD-10): {diagnoses}
-    - Procedure Codes (CPT): {procedures}
-    - Billed Amount: {amount}
-    
-    Please provide a concise, structured recommendation for the human Medical Officer reviewing this claim. 
-    Format your response EXACTLY like this:
-
-    **RECOMMENDATION:** [Approve / Deny / Investigate Further]
-    
-    **CLINICAL REASONING:** [1-2 paragraphs explaining if the procedures are clinically appropriate and medically necessary for the given diagnoses. Highlight any red flags, such as upcoding or unbundling.]
-    
-    **GUIDELINE CONTEXT:** [Mention any standard medical guidelines or protocols that support this reasoning.]
-    """
-    
-    llm = get_llm()
-    messages = [
-        SystemMessage(content=MEDICAL_REVIEW_PROMPT),
-        HumanMessage(content=prompt)
-    ]
-    try:
-        response = await llm.ainvoke(messages)
-        return str(response.content)
-    except Exception as e:
-        logger.error(f"Failed to generate medical necessity recommendation for patient {patient_name}: {str(e)}")
-        raise ValueError(f"Failed to generate medical necessity recommendation for patient {patient_name}") from e
+    logger.info(f"Finished processing policy for insurer {insurer_id}. Total {len(chunks)} chunks saved.")
