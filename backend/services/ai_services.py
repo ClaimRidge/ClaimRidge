@@ -17,32 +17,63 @@ from services.fraud_service import fraud_detector
 logger = logging.getLogger(__name__)
 
 # --- PROMPTS ---
-PRE_AUTH_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert Medical Officer and Fraud Detection agent for a health insurance company.
-Your job is to review a pre-authorisation request based on multiple clinical documents submitted by the provider.
+PRE_AUTH_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert Medical Officer and Clinical Triage Fraud Investigator.
+You will receive two inputs: the expected claim details submitted via the portal, and the clinical document text extracted via OCR.
 
 ## EXPECTED CLAIM DETAILS (Submitted via Portal)
 - Patient Name: **{expected_patient_name}**
 - Patient ID: **{expected_patient_id}**
+- Expected Age/Gender: **{expected_age} / {expected_gender}**
 - Provider Name: **{expected_provider_name}**
+- Requested Procedure: **{expected_procedure}**
+- Stated Diagnosis: **{expected_diagnosis}**
 
 ## PAYER POLICY RULES (RAG Context)
 {policy_rules}
 
-## ANTI-FRAUD SYSTEM FLAGS
+## ANTI-FRAUD SYSTEM FLAGS (Statistical Layer 1)
 {fraud_context}
 
-## YOUR TASK & CRITICAL RULES
-1. **IDENTITY VERIFICATION**: You MUST verify that the patient name in the clinical documents matches the "Expected Claim Details" above.
-2. **FRAUD ANALYSIS**: If any Anti-Fraud Flags are present, analyze the clinical documentation to see if they correlate with clinical inconsistencies (e.g., suspicious visit frequency, mismatched diagnosis). Provide a clear reason in your rationale.
-3. **CLINICAL EVIDENCE CHECK**: If the documents are blank forms or generic instructions, "deny" the request.
-4. **POLICY ADJUDICATION**: Cross-reference the clinical findings against the Payer Policy Rules. If the rules are short or generic (e.g. "Standard medical necessity guidelines apply"), USE YOUR OWN MEDICAL KNOWLEDGE to approve it if standard conservative treatments were attempted.
-5. **DECISION**: Render a decision: "approve", "deny", or "escalate".
-   - **ESCALATE** if fraud is strongly suspected or documents explicitly contradict each other.
+You must follow these steps IN ORDER before rendering any decision:
+
+STEP 1 — STATISTICAL PRE-SCREEN (XGBoost Score Review)
+Read the ANTI-FRAUD SYSTEM FLAGS passed to you above.
+If the system has flagged this claim as HIGH RISK or identified statistical anomalies (e.g., unusually high volume, fast submissions, high requested amounts):
+Set an internal flag FRAUD_ALERT = TRUE. 
+If FRAUD_ALERT = TRUE, proceed with HEIGHTENED SCRUTINY on all subsequent steps. Do NOT approve regardless of document quality.
+
+STEP 2 — IDENTITY CROSS-VALIDATION (Mandatory)
+Compare the following fields between the "Expected Claim Details" and the provided clinical document:
+- Patient full name
+- Patient ID
+- Patient age
+- Patient gender
+If 2 or more of these fields mismatch or contradict the document → flag as IDENTITY_MISMATCH.
+
+STEP 3 — PROCEDURE & DIAGNOSIS ALIGNMENT CHECK
+Compare:
+- Expected Requested Procedure vs. procedure actually described in the document.
+- Expected Stated Diagnosis vs. diagnosis described in the document.
+- Expected Provider Name vs. signing physician in the document.
+If ANY of these do not align or if the document describes an entirely unrelated procedure/patient → flag as CLINICAL_CONTRADICTION.
+
+STEP 4 — CLINICAL NECESSITY & EVIDENCE CHECK
+Only if Steps 1-3 are CLEAN, evaluate the clinical document against the PAYER POLICY RULES:
+- Are the documents blank forms or generic instructions? (If yes, fail).
+- Are standard conservative treatments documented and attempted?
+- Is physician justification present?
+
+STEP 5 — FINAL DECISION LOGIC
+- IF FRAUD_ALERT = TRUE AND (IDENTITY_MISMATCH = TRUE OR CLINICAL_CONTRADICTION = TRUE) → ESCALATE
+- IF IDENTITY_MISMATCH = TRUE (regardless of fraud level) → ESCALATE
+- IF CLINICAL_CONTRADICTION = TRUE → ESCALATE
+- IF clinical necessity criteria NOT met or documents are blank/generic → DENY
+- IF all checks pass and treatments are justified → APPROVE
 
 Respond ONLY with valid JSON in this exact format:
 {{
     "decision": "approve" | "deny" | "escalate",
-    "rationale": "Provide a clear justification, including fraud analysis if applicable."
+    "rationale": "Provide a clear, detailed justification explaining exactly which steps passed/failed. If escalated, list the exact mismatches/contradictions found."
 }}
 """
 
@@ -69,12 +100,20 @@ def get_embeddings():
 
 # --- UTILITIES ---
 def extract_json_from_text(text: str) -> str:
-    text = re.sub(r'```[\w]*\s*\n?', '', text)
+    """Extracts JSON from an LLM response, stripping out markdown formatting."""
+    if not text:
+        return "{}"
+        
+    # Clean up standard markdown JSON code blocks
+    text = text.replace('```json', '').replace('```', '').strip()
+    
     start_idx = text.find('{')
     end_idx = text.rfind('}')
-    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+    
+    if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
         return text[start_idx:end_idx + 1]
-    return text.strip()
+        
+    return "{}" # Return empty JSON object if nothing found
 
 async def extract_text_from_file(base64_data: str, media_type: str) -> str:
     """Extracts text from PDF, Images, or Word documents with high-fidelity formatting."""
@@ -225,11 +264,16 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
         policy_rules = "\n".join([match["content"] for match in policy_res.data])
 
     # 5. Ask the LLM to reason (Injecting Expected Details to prevent Identity Fraud)
+    logger.info("fraud_context: " + fraud_context)
     llm = get_llm()
     prompt = PRE_AUTH_SYSTEM_PROMPT.format(
         expected_patient_name=request_data.get("patient_name", "Unknown"),
         expected_patient_id=request_data.get("patient_id", "Unknown"),
         expected_provider_name=request_data.get("provider_name", "Unknown"),
+        expected_age=request_data.get("patient_age", "Unknown"),
+        expected_gender=request_data.get("gender", "Unknown"),
+        expected_procedure=request_data.get("procedure", "Unknown"),
+        expected_diagnosis=request_data.get("diagnosis", "Unknown"),
         policy_rules=policy_rules,
         fraud_context=fraud_context
     )
@@ -244,8 +288,11 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
     
     try:
         result = json.loads(json_str)
+        if not result:
+            raise ValueError("Parsed JSON was empty.")
+            
         decision = result.get("decision", "escalate")
-        rationale = result.get("rationale", "Failed to parse rationale.")
+        rationale = result.get("rationale", "No rationale provided by AI.")
         
         # 6. Update Database
         new_status = 'escalated' if decision == 'escalate' else decision
@@ -260,10 +307,12 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
         
     except Exception as e:
         logger.error(f"Failed to parse AI Pre-Auth Decision: {e}")
+        logger.error(f"RAW LLM OUTPUT WAS: {response.content}")
+        
         supabase.table("pre_auth_requests").update({
             "status": "escalated",
             "ai_decision": "escalate",
-            "ai_rationale": f"System error during AI evaluation. Manual review required."
+            "ai_rationale": f"AI Triage flagged this for review.\n\n### Raw Reasoning:\n\n{response.content}"
         }).eq("id", pre_auth_id).execute()
 
 async def process_and_embed_policy_file(insurer_id: str, base64_data: str, file_name: str = ""):

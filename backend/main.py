@@ -1,7 +1,7 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import pre_auth, dropoff, insurer, user
+from routers import user, insurer, pre_auth, dropoff, fraud
 from core.config import logger
 
 app = FastAPI(title="ClaimRidge Enterprise API")
@@ -17,6 +17,7 @@ app.add_middleware(
 # Register routers
 app.include_router(pre_auth.router)
 app.include_router(dropoff.router)
+app.include_router(fraud.router)
 app.include_router(insurer.router)
 app.include_router(user.router)
 
