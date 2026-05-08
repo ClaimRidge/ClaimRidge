@@ -2,7 +2,7 @@ import logging
 import uuid
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from core.database import supabase
@@ -20,10 +20,13 @@ class DropoffAttachment(BaseModel):
 
 class DropoffRequest(BaseModel):
     insurer_id: str
-    provider_name: str
-    patient_name: str
-    patient_id: str
     attachments: List[DropoffAttachment]
+    # Patient/provider info is now extracted from the uploaded documents server-side.
+    # Kept optional for backwards compatibility / future API clients that want to
+    # pre-populate before extraction overwrites with values from the docs.
+    provider_name: Optional[str] = None
+    patient_name: Optional[str] = None
+    patient_id: Optional[str] = None
 
 def generate_reference():
     return f"PA-{int(time.time())}-{str(uuid.uuid4())[:4].upper()}"
@@ -46,20 +49,30 @@ async def get_public_insurers():
 
 @router.post("/")
 async def submit_dropoff(payload: DropoffRequest, background_tasks: BackgroundTasks):
-    """Handles the form submission from the Drop-Off Portal."""
-    logger.info(f"Received Drop-Off request for patient {payload.patient_name} to insurer {payload.insurer_id}")
-    
+    """Handles the form submission from the Drop-Off Portal.
+    Patient / provider details are extracted from the uploaded documents in the
+    background OCR step (process_pre_auth_case). The placeholders below are
+    overwritten once extraction completes."""
+    if not payload.attachments:
+        raise HTTPException(status_code=400, detail="At least one document is required.")
+
+    logger.info(
+        f"Received Drop-Off request: {len(payload.attachments)} document(s) "
+        f"for insurer {payload.insurer_id}"
+    )
+
     ref_number = generate_reference()
     sla_deadline = datetime.now(timezone.utc) + timedelta(hours=24)
-    
-    # 1. Create the Pre-Auth Record
+
+    # 1. Create the Pre-Auth Record with placeholder identity fields. The
+    #    metadata extraction step will overwrite these once OCR is done.
     insert_res = supabase.table("pre_auth_requests").insert({
         "insurer_id": payload.insurer_id,
         "reference_number": ref_number,
-        "provider_name": payload.provider_name,
-        "patient_name": payload.patient_name,
-        "patient_id": payload.patient_id,
-        "requested_amount": 0.0,
+        "provider_name": payload.provider_name or "Pending extraction",
+        "patient_name": payload.patient_name or "Pending extraction",
+        "patient_id": payload.patient_id or "Pending extraction",
+        "claim_amount": 0.0,
         "status": "processing",
         "sla_deadline": sla_deadline.isoformat(),
     }).execute()

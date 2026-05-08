@@ -31,7 +31,7 @@ async def get_pre_auth_queue(current_user = Depends(get_current_user)):
     # 2. Fetch the pre-auths for this insurer, ordered by SLA deadline (most urgent first)
     try:
         queue_res = supabase.table("pre_auth_requests").select(
-            "id, reference_number, provider_name, patient_name, patient_id, requested_amount, status, sla_deadline, ai_decision, created_at"
+            "id, reference_number, provider_name, patient_name, patient_id, claim_amount, status, sla_deadline, ai_decision, created_at"
         ).eq("insurer_id", insurer_id).order("sla_deadline", desc=False).execute()
         
         return {"status": "success", "data": queue_res.data}

@@ -12,6 +12,7 @@ import {
   XCircle,
   FileText
 } from "lucide-react";
+import Button from "@/components/ui/Button";
 
 // --- Types ---
 interface PreAuthRequest {
@@ -20,7 +21,7 @@ interface PreAuthRequest {
   provider_name: string;
   patient_name: string;
   patient_id: string;
-  requested_amount: number;
+  claim_amount: number;
   status: string;
   sla_deadline: string;
   ai_decision: string | null;
@@ -39,24 +40,29 @@ function getSlaStatus(deadlineIso: string) {
   return { text: `${Math.floor(diffHours)}h remaining`, color: "text-[#16a34a]", bg: "bg-[#f0fdf4]" };
 }
 
-function KpiCard({ label, value, icon: Icon, color }: { label: string; value: string | number; icon: React.ElementType; color: string }) {
+function KpiCard({ label, value, icon: Icon, color, description }: { label: string; value: string | number; icon: React.ElementType; color: string; description?: string }) {
   const colors: Record<string, string> = {
-    blue: "bg-blue-50 text-blue-600 border-blue-200",
-    amber: "bg-amber-50 text-amber-600 border-amber-200",
-    green: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]",
-    red: "bg-red-50 text-red-600 border-red-200"
+    blue: "from-blue-500/10 to-indigo-500/5 text-blue-600 border-blue-100 icon-bg-blue-100",
+    amber: "from-amber-500/10 to-orange-500/5 text-amber-600 border-amber-100 icon-bg-amber-100",
+    green: "from-[#16a34a]/10 to-[#22c55e]/5 text-[#16a34a] border-green-100 icon-bg-green-100",
+    red: "from-red-500/10 to-rose-500/5 text-red-600 border-red-100 icon-bg-red-100"
   };
   const c = colors[color] || colors.blue;
 
   return (
-    <div className="bg-white border border-[#e5e7eb] rounded-2xl p-5 shadow-sm">
-      <div className="flex items-center justify-between mb-3">
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${c}`}>
-          <Icon className="h-5 w-5" />
+    <div className={`relative overflow-hidden bg-gradient-to-br ${c.split(' ').slice(0,2).join(' ')} border ${c.split(' ')[3]} rounded-3xl p-6 shadow-sm hover:shadow-md transition-all duration-300 group`}>
+      <div className="flex items-start justify-between relative z-10">
+        <div>
+          <p className="text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em] mb-1">{label}</p>
+          <p className="font-display text-4xl font-extrabold tracking-tighter text-[#0a0a0a] group-hover:scale-110 origin-left transition-transform duration-500">{value}</p>
+          {description && <p className="text-[10px] text-[#6b7280] mt-2 font-medium">{description}</p>}
+        </div>
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${c.split(' ')[4].replace('icon-bg-', 'bg-')} shadow-inner`}>
+          <Icon className="h-6 w-6" />
         </div>
       </div>
-      <p className="font-display text-3xl font-bold tracking-tight text-[#0a0a0a]">{value}</p>
-      <p className="text-xs font-semibold text-[#9ca3af] mt-1 uppercase tracking-wider">{label}</p>
+      {/* Decorative background element */}
+      <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-white/10 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700" />
     </div>
   );
 }
@@ -91,7 +97,6 @@ export default function InsurerDashboardPage() {
 
   useEffect(() => {
     fetchQueue();
-    // Refresh the queue every minute
     const interval = setInterval(fetchQueue, 60000);
     return () => clearInterval(interval);
   }, [fetchQueue]);
@@ -99,89 +104,159 @@ export default function InsurerDashboardPage() {
   // Calculate KPIs
   const escalatedCount = queue.filter(q => q.status === "escalated" || q.ai_decision === "escalate").length;
   const processingCount = queue.filter(q => q.status === "processing").length;
-  const approvedCount = queue.filter(q => q.status === "approve" || q.status === "approved").length;
+  const approvedToday = queue.filter(q => 
+    (q.status === "approve" || q.status === "approved") && 
+    new Date(q.created_at).toDateString() === new Date().toDateString()
+  ).length;
 
   if (loading) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center p-8">
         <div className="animate-spin h-8 w-8 border-4 border-[#16a34a] border-t-transparent rounded-full mb-4" />
-        <p className="text-[#9ca3af] text-sm animate-pulse">Loading Medical Officer Queue...</p>
+        <p className="text-[#9ca3af] text-sm animate-pulse">Synchronizing Medical Queue...</p>
       </div>
     );
   }
 
+  const recentQueue = queue.slice(0, 5);
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-12">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 lg:py-12 bg-[#fcfdfc]">
       {/* Welcome Header */}
-      <div className="mb-8">
-        <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-[#0a0a0a] tracking-tight">
-          Medical Officer <span className="text-[#16a34a]">Inbox</span>
-        </h1>
-        <p className="text-[#6b7280] text-sm sm:text-base mt-2 max-w-2xl">
-          Triage incoming pre-authorisation requests. AI has prioritized cases based on clinical complexity and SLA deadlines.
-        </p>
+      <div className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-2 h-2 rounded-full bg-[#16a34a] animate-ping" />
+            <span className="text-[10px] font-black text-[#16a34a] uppercase tracking-[0.3em]">Live Medical Operations</span>
+          </div>
+          <h1 className="font-display text-4xl sm:text-5xl font-extrabold text-[#0a0a0a] tracking-tight">
+            Medical <span className="text-[#16a34a]">Intelligence</span> Hub
+          </h1>
+          <p className="text-[#6b7280] text-sm sm:text-lg mt-3 max-w-2xl font-medium">
+            AI-augmented clinical adjudication portal. Your inbox is prioritized by statistical fraud scores and clinical necessity guidelines.
+          </p>
+        </div>
+        <div className="flex gap-3">
+           <Link href="/dashboard/insurance/queue">
+              <Button variant="outline" className="rounded-2xl px-6 h-12 border-2 hover:bg-gray-50 transition-all font-bold">
+                View Full Archive
+              </Button>
+           </Link>
+        </div>
       </div>
 
-      {/* KPI Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
-        <KpiCard label="Total in Queue" value={queue.length} icon={Inbox} color="blue" />
-        <KpiCard label="Needs Review" value={escalatedCount} icon={AlertTriangle} color="amber" />
-        <KpiCard label="Auto-Processing" value={processingCount} icon={Clock} color="blue" />
-        <KpiCard label="Auto-Approved Today" value={approvedCount} icon={CheckCircle} color="green" />
+      {/* KPI Bar - Enhanced Redesign */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
+        <KpiCard 
+          label="Active Workload" 
+          value={queue.length} 
+          icon={Inbox} 
+          color="blue" 
+          description="Total pre-auths in current cycle"
+        />
+        <KpiCard 
+          label="Manual Review" 
+          value={escalatedCount} 
+          icon={AlertTriangle} 
+          color="amber" 
+          description="Flagged for physician override"
+        />
+        <KpiCard 
+          label="AI Processing" 
+          value={processingCount} 
+          icon={Clock} 
+          color="blue" 
+          description="Documents being transcribed"
+        />
+        <KpiCard 
+          label="Auto-Approved" 
+          value={approvedToday} 
+          icon={CheckCircle} 
+          color="green" 
+          description="Successfully adjudicated today"
+        />
       </div>
 
-      {/* Main Queue Table */}
-      <div className="bg-white border border-[#e5e7eb] rounded-[24px] shadow-sm overflow-hidden flex flex-col">
-        <div className="px-6 py-5 border-b border-[#f3f4f6] flex items-center justify-between bg-[#fcfdfc]">
-          <h2 className="font-display font-bold text-[#0a0a0a] text-lg flex items-center gap-2">
-            <FileText className="h-5 w-5 text-[#16a34a]" /> Priority Triage Queue
-          </h2>
+      {/* Main Queue Table - Limited View */}
+      <div className="bg-white border border-[#e5e7eb] rounded-[2.5rem] shadow-[0_20px_50px_-20px_rgba(0,0,0,0.05)] overflow-hidden flex flex-col">
+        <div className="px-8 py-7 border-b border-[#f3f4f6] flex items-center justify-between bg-white">
+          <div>
+            <h2 className="font-display font-black text-[#0a0a0a] text-xl flex items-center gap-3 tracking-tight">
+              <div className="w-8 h-8 bg-[#f0fdf4] rounded-lg flex items-center justify-center">
+                <FileText className="h-4 w-4 text-[#16a34a]" />
+              </div> 
+              Priority Inbox
+            </h2>
+            <p className="text-xs text-[#9ca3af] mt-1 font-medium italic">Showing the 5 most urgent cases requiring attention</p>
+          </div>
+          <Link 
+            href="/dashboard/insurance/queue" 
+            className="text-xs font-black uppercase tracking-widest text-[#16a34a] hover:text-[#15803d] flex items-center gap-2 group"
+          >
+            See all requests <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+          </Link>
         </div>
         
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
-              <tr className="bg-[#f9fafb] text-left border-b border-[#f3f4f6]">
-                <th className="px-6 py-4 text-xs font-bold text-[#9ca3af] uppercase tracking-wider">Ref #</th>
-                <th className="px-6 py-4 text-xs font-bold text-[#9ca3af] uppercase tracking-wider">Provider / Patient</th>
-                <th className="px-6 py-4 text-xs font-bold text-[#9ca3af] uppercase tracking-wider">SLA Deadline</th>
-                <th className="px-6 py-4 text-xs font-bold text-[#9ca3af] uppercase tracking-wider">AI Decision</th>
-                <th className="px-6 py-4 text-xs font-bold text-[#9ca3af] uppercase tracking-wider">Status</th>
-                <th className="px-6 py-4 text-xs font-bold text-[#9ca3af] uppercase tracking-wider text-right">Action</th>
+              <tr className="bg-[#fafbfc] text-left border-b border-[#f3f4f6]">
+                <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Patient / ID</th>
+                <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Time to SLA</th>
+                <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">AI Intelligence</th>
+                <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">State</th>
+                <th className="px-8 py-5 text-right"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#f3f4f6]">
-              {queue.map((req) => {
+              {recentQueue.map((req) => {
                 const sla = getSlaStatus(req.sla_deadline);
                 return (
-                  <tr key={req.id} className="hover:bg-[#f9fafb] transition-colors group">
-                    <td className="px-6 py-4 font-mono text-sm text-[#0a0a0a] font-medium">{req.reference_number}</td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm font-bold text-[#0a0a0a]">{req.patient_name}</div>
-                      <div className="text-xs text-[#6b7280] mt-0.5 truncate max-w-[200px]">{req.provider_name}</div>
+                  <tr key={req.id} className="hover:bg-[#fcfdfc] transition-all group">
+                    <td className="px-8 py-6">
+                      <div className="text-sm font-extrabold text-[#0a0a0a]">{req.patient_name}</div>
+                      <div className="text-[10px] font-mono text-[#9ca3af] mt-1 uppercase tracking-wider">{req.patient_id}</div>
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs border border-transparent ${sla.bg} ${sla.color}`}>
-                        <Clock className="h-3 w-3 mr-1.5" /> {sla.text}
+                    <td className="px-8 py-6">
+                      <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${sla.bg} ${sla.color} border border-current/10 shadow-sm`}>
+                         {sla.text}
                       </span>
                     </td>
-                    <td className="px-6 py-4">
-                      {req.ai_decision === "approve" && <span className="text-[#16a34a] text-sm font-bold flex items-center gap-1"><CheckCircle className="h-4 w-4"/> Approve</span>}
-                      {req.ai_decision === "deny" && <span className="text-red-600 text-sm font-bold flex items-center gap-1"><XCircle className="h-4 w-4"/> Deny</span>}
-                      {req.ai_decision === "escalate" && <span className="text-amber-600 text-sm font-bold flex items-center gap-1"><AlertTriangle className="h-4 w-4"/> Escalate</span>}
-                      {!req.ai_decision && <span className="text-[#9ca3af] text-sm italic">Analyzing...</span>}
+                    <td className="px-8 py-6">
+                      <div className="flex items-center gap-2">
+                        {req.ai_decision === "approve" && (
+                          <div className="flex items-center gap-2 bg-green-50 text-[#16a34a] px-3 py-1 rounded-lg border border-green-100 text-[10px] font-black uppercase tracking-widest shadow-sm">
+                            <CheckCircle className="h-3 w-3"/> Safe
+                          </div>
+                        )}
+                        {req.ai_decision === "deny" && (
+                          <div className="flex items-center gap-2 bg-red-50 text-red-600 px-3 py-1 rounded-lg border border-red-100 text-[10px] font-black uppercase tracking-widest shadow-sm">
+                            <XCircle className="h-3 w-3"/> Rejection
+                          </div>
+                        )}
+                        {req.ai_decision === "escalate" && (
+                          <div className="flex items-center gap-2 bg-amber-50 text-amber-600 px-3 py-1 rounded-lg border border-amber-100 text-[10px] font-black uppercase tracking-widest shadow-sm">
+                            <AlertTriangle className="h-3 w-3"/> Anomaly
+                          </div>
+                        )}
+                        {!req.ai_decision && (
+                          <div className="flex items-center gap-2 bg-gray-50 text-gray-400 px-3 py-1 rounded-lg border border-gray-100 text-[10px] font-black uppercase tracking-widest">
+                            Scanning...
+                          </div>
+                        )}
+                      </div>
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`text-xs font-bold uppercase tracking-wider ${req.status === 'escalated' ? 'text-amber-600' : 'text-[#6b7280]'}`}>
+                    <td className="px-8 py-6">
+                      <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${req.status === 'escalated' ? 'text-amber-600' : 'text-[#9ca3af]'}`}>
                         {req.status}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-8 py-6 text-right">
                       <Link 
                         href={`/dashboard/insurance/pre-auth/${req.id}`} 
-                        className="inline-flex items-center gap-1 text-xs font-bold bg-white border border-[#e5e7eb] px-3 py-1.5 rounded-lg hover:bg-[#16a34a] hover:text-white hover:border-[#16a34a] transition-all shadow-sm"
+                        className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] bg-[#0a0a0a] text-white px-5 py-3 rounded-2xl hover:bg-[#16a34a] hover:scale-105 transition-all shadow-xl active:scale-95"
                       >
-                        Review <ArrowRight className="h-3 w-3" />
+                        Inspect <ArrowRight className="h-3 w-3" />
                       </Link>
                     </td>
                   </tr>
@@ -190,14 +265,27 @@ export default function InsurerDashboardPage() {
             </tbody>
           </table>
           {queue.length === 0 && (
-            <div className="p-16 text-center">
-              <CheckCircle className="h-12 w-12 text-[#dcfce7] mx-auto mb-4" />
-              <h3 className="text-lg font-bold text-[#0a0a0a] mb-1">Inbox Zero</h3>
-              <p className="text-[#6b7280] text-sm">All pre-authorisation requests have been processed.</p>
+            <div className="p-20 text-center">
+              <div className="w-16 h-16 bg-[#f0fdf4] rounded-full flex items-center justify-center mx-auto mb-6">
+                <CheckCircle className="h-8 w-8 text-[#16a34a]" />
+              </div>
+              <h3 className="text-2xl font-black text-[#0a0a0a] tracking-tight mb-1">Queue Clear</h3>
+              <p className="text-[#6b7280] font-medium">All clinical cases have been adjudicated.</p>
             </div>
           )}
         </div>
+        
+        {queue.length > 5 && (
+          <div className="p-6 bg-[#fafbfc] border-t border-[#f3f4f6] text-center">
+            <Link 
+              href="/dashboard/insurance/queue" 
+              className="text-xs font-black uppercase tracking-widest text-[#6b7280] hover:text-[#0a0a0a] transition-colors"
+            >
+              + {queue.length - 5} more cases in full queue
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );
-}
+}

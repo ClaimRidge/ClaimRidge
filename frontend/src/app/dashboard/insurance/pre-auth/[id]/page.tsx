@@ -27,7 +27,7 @@ interface PreAuthRequest {
   provider_name: string;
   patient_name: string;
   patient_id: string;
-  requested_amount: number;
+  claim_amount: number;
   status: string;
   sla_deadline: string;
   ai_decision: string | null;

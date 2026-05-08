@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Upload, FileText, CheckCircle, ArrowLeft, Loader2, Building2, Trash2 } from "lucide-react";
 import Button from "@/components/ui/Button";
-import Input from "@/components/ui/Input";
 import ClaimRidgeLogo from "@/components/ClaimRidgeLogo";
 
 interface Insurer {
@@ -18,10 +17,7 @@ export default function DropOffPortal() {
   const [selectedInsurerId, setSelectedInsurerId] = useState("");
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  
-  const [providerName, setProviderName] = useState("");
-  const [patientName, setPatientName] = useState("");
-  const [patientId, setPatientId] = useState("");
+
   const [files, setFiles] = useState<File[]>([]);
   
   const [loading, setLoading] = useState(false);
@@ -68,8 +64,8 @@ export default function DropOffPortal() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedInsurerId || !providerName || !patientName || files.length === 0) {
-      setError("Please fill all fields and attach at least one document.");
+    if (!selectedInsurerId || files.length === 0) {
+      setError("Please select an insurer and attach at least one document.");
       return;
     }
 
@@ -90,9 +86,6 @@ export default function DropOffPortal() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           insurer_id: selectedInsurerId,
-          provider_name: providerName,
-          patient_name: patientName,
-          patient_id: patientId,
           attachments,
         }),
       });
@@ -101,9 +94,7 @@ export default function DropOffPortal() {
 
       const data = await res.json();
       setSuccess(data.reference_number);
-      
-      setPatientName("");
-      setPatientId("");
+
       setFiles([]);
     } catch (err) {
       console.error(err);
@@ -303,39 +294,11 @@ export default function DropOffPortal() {
 
             <div className="space-y-6 pt-4 border-t border-gray-100">
               <label className="block text-sm font-bold text-[#374151] tracking-wide uppercase">
-                Step 2: Patient & Provider Info
+                Step 2: Clinical Documentation
               </label>
-              
-              <Input 
-                label="Provider / Clinic Name" 
-                placeholder="e.g. Amman General Hospital" 
-                value={providerName} 
-                onChange={e => setProviderName(e.target.value)} 
-                required 
-              />
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <Input 
-                  label="Patient Full Name" 
-                  placeholder="Ahmad Khalil" 
-                  value={patientName} 
-                  onChange={e => setPatientName(e.target.value)} 
-                  required 
-                />
-                <Input 
-                  label="Patient ID / National ID" 
-                  placeholder="987654321" 
-                  value={patientId} 
-                  onChange={e => setPatientId(e.target.value)} 
-                  required 
-                />
-              </div>
-            </div>
-
-            <div className="space-y-6 pt-4 border-t border-gray-100">
-              <label className="block text-sm font-bold text-[#374151] tracking-wide uppercase">
-                Step 3: Clinical Documentation
-              </label>
+              <p className="text-xs text-[#6b7280] -mt-2">
+                Patient and provider details will be extracted automatically from the documents you upload.
+              </p>
               
               <div className="relative border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] bg-[#fafafa] rounded-2xl p-8 transition-all group text-center">
                 <input 

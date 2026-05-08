@@ -17,8 +17,7 @@ from services.fraud_service import fraud_detector
 logger = logging.getLogger(__name__)
 
 # --- PROMPTS ---
-PRE_AUTH_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert Medical Officer and Clinical Triage Fraud Investigator.
-You will receive two inputs: the expected claim details submitted via the portal, and the clinical document text extracted via OCR.
+PRE_AUTH_SYSTEM_PROMPT = """You are ClaimRidge AI, a clinical triage investigator. The trained statistical fraud model has FLAGGED this pre-auth as {tier_name}-RISK ({fraud_score}%). Your job is NOT to second-guess the score — your job is to investigate WHY by examining the clinical document and the payer policy, and to either confirm the concern with concrete evidence or clear it.
 
 ## EXPECTED CLAIM DETAILS (Submitted via Portal)
 - Patient Name: **{expected_patient_name}**
@@ -31,51 +30,156 @@ You will receive two inputs: the expected claim details submitted via the portal
 ## PAYER POLICY RULES (RAG Context)
 {policy_rules}
 
-## ANTI-FRAUD SYSTEM FLAGS (Statistical Layer 1)
-{fraud_context}
+## STATISTICAL FRAUD MODEL OUTPUT
+The trained XGBoost fraud model scored this claim {fraud_score}% (tier: {tier_name}).
+Flags: {fraud_flags}
 
-You must follow these steps IN ORDER before rendering any decision:
+## YOUR INVESTIGATION
 
-STEP 1 — STATISTICAL PRE-SCREEN (XGBoost Score Review)
-Read the ANTI-FRAUD SYSTEM FLAGS passed to you above.
-If the system has flagged this claim as HIGH RISK or identified statistical anomalies (e.g., unusually high volume, fast submissions, high requested amounts):
-Set an internal flag FRAUD_ALERT = TRUE. 
-If FRAUD_ALERT = TRUE, proceed with HEIGHTENED SCRUTINY on all subsequent steps. Do NOT approve regardless of document quality.
+STEP 1 — IDENTITY CROSS-VALIDATION
+Compare patient name, ID, age, and gender between the Expected Claim Details and the clinical document.
+If 2+ fields mismatch or contradict the document → IDENTITY_MISMATCH (concrete finding).
 
-STEP 2 — IDENTITY CROSS-VALIDATION (Mandatory)
-Compare the following fields between the "Expected Claim Details" and the provided clinical document:
-- Patient full name
-- Patient ID
-- Patient age
-- Patient gender
-If 2 or more of these fields mismatch or contradict the document → flag as IDENTITY_MISMATCH.
+STEP 2 — PROCEDURE & DIAGNOSIS ALIGNMENT
+Compare expected procedure / diagnosis / provider name vs. what the clinical document actually describes.
+If any do not align, or the document describes an unrelated procedure/patient → CLINICAL_CONTRADICTION (concrete finding).
 
-STEP 3 — PROCEDURE & DIAGNOSIS ALIGNMENT CHECK
-Compare:
-- Expected Requested Procedure vs. procedure actually described in the document.
-- Expected Stated Diagnosis vs. diagnosis described in the document.
-- Expected Provider Name vs. signing physician in the document.
-If ANY of these do not align or if the document describes an entirely unrelated procedure/patient → flag as CLINICAL_CONTRADICTION.
+STEP 3 — CLINICAL NECESSITY & DOCUMENT QUALITY
+Evaluate the clinical document against the PAYER POLICY RULES:
+- Are documents blank forms or generic instructions? (concrete finding)
+- Are standard conservative treatments documented and attempted as the policy requires? (concrete finding if missing)
+- Is physician justification present? (concrete finding if missing)
 
-STEP 4 — CLINICAL NECESSITY & EVIDENCE CHECK
-Only if Steps 1-3 are CLEAN, evaluate the clinical document against the PAYER POLICY RULES:
-- Are the documents blank forms or generic instructions? (If yes, fail).
-- Are standard conservative treatments documented and attempted?
-- Is physician justification present?
+## DECISION
 
-STEP 5 — FINAL DECISION LOGIC
-- IF FRAUD_ALERT = TRUE AND (IDENTITY_MISMATCH = TRUE OR CLINICAL_CONTRADICTION = TRUE) → ESCALATE
-- IF IDENTITY_MISMATCH = TRUE (regardless of fraud level) → ESCALATE
-- IF CLINICAL_CONTRADICTION = TRUE → ESCALATE
-- IF clinical necessity criteria NOT met or documents are blank/generic → DENY
-- IF all checks pass and treatments are justified → APPROVE
+Choose ONE:
+- **approve**: After thorough investigation you found NO concrete contradiction or missing requirement. The model may have reacted to a structural pattern that the document evidence rules out. You are explicitly allowed to overturn the model's flag — you have document context the model does not.
+- **escalate**: You found at least ONE concrete concern that warrants human review. Provide evidence.{deny_option}
 
-Respond ONLY with valid JSON in this exact format:
+## CONSTRAINTS
+- Approve is allowed even though the model flagged this — your document-level investigation is authoritative when it contradicts the score.
+- escalate{or_deny} requires concrete evidence: a specific named field, value, document quote, or contradiction. Generic phrases like "fraud system flagged this", "further review", or "thorough examination" are NOT evidence and will be rejected.
+- Never escalate or deny just to defer to the model — if you cannot point to something specific, choose approve.{deny_constraint}
+
+## TONE OF THE RATIONALE AND EVIDENCE
+The `rationale` and each `finding` will be shown to the provider, the patient's representative, and the insurer's medical reviewer. Write in clear, professional, plain English suitable for a healthcare audience.
+- Do NOT mention internal mechanics: no "model", "score", "tier", "fraud system", "XGBoost", "anti-fraud", "statistical layer", or percentages.
+- Do NOT use audit/debug language: no "auto-downgrade", "fallback", "flag = TRUE", "Step 1/2/3".
+- Speak about the claim itself: what the documents show, which clinical or policy criteria are met or unmet, what specific information is missing.
+- Be respectful and constructive. When asking for more information, say what is needed and why.
+- Avoid sounding accusatory. Phrase concerns as observations about the documentation, not allegations against the provider.
+
+## OUTPUT
+Respond ONLY with valid JSON, no commentary:
 {{
-    "decision": "approve" | "deny" | "escalate",
-    "rationale": "Provide a clear, detailed justification explaining exactly which steps passed/failed. If escalated, list the exact mismatches/contradictions found."
+    "decision": "approve" | "escalate"{or_deny_schema},
+    "rationale": "A clear, professional paragraph (3-5 sentences) explaining the decision in language a provider or patient representative would understand.",
+    "evidence": [
+        {{
+            "step": "identity_validation" | "fraud_prescreen" | "policy_compliance" | "clinical_consistency",
+            "finding": "A specific, professionally worded observation — name the field, value, or clinical detail at issue without using debug terminology."
+        }}
+    ]
 }}
 """
+
+DENY_OPTION_TEXT = (
+    "\n- **deny**: ONLY available because the model scored EXTREME RISK. Use ONLY when "
+    "you have found undeniable, concrete contradictions (identity mismatch, blank/forged documents, "
+    "wholly unrelated procedure, etc.) that justify outright refusal. Provide evidence."
+)
+DENY_CONSTRAINT_TEXT = (
+    "\n- deny is reserved for EXTREME-tier claims with irrefutable evidence. If you are "
+    "unsure, choose escalate instead — a human reviewer will make the final call."
+)
+
+ALLOWED_EVIDENCE_STEPS = {
+    "identity_validation",
+    "fraud_prescreen",
+    "policy_compliance",
+    "clinical_consistency",
+}
+
+# Tokens that indicate a finding refers to something concrete in the claim or document
+# (a field, a value, a contradiction, a quoted phrase) rather than meta-language about
+# the review process itself.
+CONCRETE_INDICATORS = {
+    "name", "id", "age", "gender", "diagnosis", "procedure", "physician", "doctor",
+    "patient", "provider", "policy rule", "amount", "date", "code", "field",
+    "document", "form", "mismatch", "contradict", "missing", "absent", "blank",
+    "quote", "states", "reads", "shows", "reports",
+}
+
+GENERIC_PHRASES = (
+    "fraud system", "anti-fraud", "high-risk flag", "high risk flag",
+    "further review", "further investigation", "necessitates review",
+    "thorough examination", "due diligence",
+)
+
+
+def _is_concrete_finding(finding: str) -> bool:
+    if not finding or len(finding.strip()) < 30:
+        return False
+    f_lower = finding.lower()
+    if any(ind in f_lower for ind in CONCRETE_INDICATORS):
+        # Reject if it's *only* generic boilerplate even though it contains a keyword.
+        non_generic = f_lower
+        for phrase in GENERIC_PHRASES:
+            non_generic = non_generic.replace(phrase, "")
+        return len(non_generic.strip()) >= 30
+    return False
+
+
+def _validate_decision(result: dict) -> tuple[bool, str]:
+    """Returns (is_valid, reason). Enforces the evidence contract on escalate/deny."""
+    if not isinstance(result, dict):
+        return False, "response is not a JSON object"
+    decision = str(result.get("decision", "")).strip().lower()
+    if decision not in {"approve", "deny", "escalate"}:
+        return False, f"decision must be approve/deny/escalate, got '{decision}'"
+    if decision == "approve":
+        return True, ""
+    evidence = result.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        return False, f"{decision} decision requires a non-empty evidence array"
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        step = str(item.get("step", "")).strip().lower()
+        finding = str(item.get("finding", "")).strip()
+        if step in ALLOWED_EVIDENCE_STEPS and _is_concrete_finding(finding):
+            return True, ""
+    return (
+        False,
+        f"{decision} decision has no concrete evidence: every finding is empty, "
+        "too short, or only references the fraud score / generic review language",
+    )
+
+
+EVIDENCE_STEP_LABELS = {
+    "identity_validation": "Identity verification",
+    "fraud_prescreen": "Risk assessment",
+    "policy_compliance": "Policy compliance",
+    "clinical_consistency": "Clinical review",
+}
+
+
+def _format_rationale_with_evidence(rationale: str, evidence) -> str:
+    if not isinstance(evidence, list) or not evidence:
+        return rationale
+    items = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        finding = str(item.get("finding", "")).strip()
+        if not finding:
+            continue
+        step_key = str(item.get("step", "")).strip().lower()
+        label = EVIDENCE_STEP_LABELS.get(step_key, "Review note")
+        items.append(f"- **{label}:** {finding}")
+    if not items:
+        return rationale
+    return (rationale or "").rstrip() + "\n\n**Supporting observations:**\n\n" + "\n".join(items)
 
 # --- LLM INITIALIZATION ---
 def get_vision_llm():
@@ -184,32 +288,157 @@ async def check_fraud_system(request_data: dict) -> dict:
         }
 
 
+METADATA_EXTRACTION_PROMPT = """You are a medical claim metadata extractor. Read the clinical documents below and extract the following fields. If a field is not clearly present in the documents, return null for that field — do NOT guess.
+
+Fields to extract:
+- patient_name: The patient's full name as it appears in the documents.
+- patient_id: The patient's national ID, insurance ID, or medical record number.
+- patient_age: Integer age in years.
+- patient_gender: "Male", "Female", or null.
+- patient_state: The patient's state, governorate, or region of residence (e.g. "Amman", "Dubai", "Riyadh"). Null if not stated.
+- provider_name: The hospital, clinic, or provider organisation name.
+- provider_specialty: The treating physician's specialty or the department issuing the request (e.g. "Cardiology", "Orthopedics", "General Surgery"). Null if not stated.
+- diagnosis_code: ICD-10 code if present (e.g. "M54.5"), otherwise null.
+- procedure_code: CPT or local procedure code if present, otherwise null.
+- visit_type: "Inpatient", "Outpatient", "Emergency", "Day Surgery", or similar — whichever the document indicates. Null if unclear.
+- length_of_stay: Numeric expected or actual length of stay in days. For purely outpatient visits, return 1. Null if not stated and not inferable.
+- insurance_type: The plan, scheme, or coverage type referenced in the documents (e.g. "Comprehensive", "Basic", "Government", "Corporate"). Null if not stated.
+- claim_amount: Numeric requested/billed amount (no currency), otherwise null.
+
+If multiple documents disagree (e.g. two different patient names), pick the value that appears in the most documents and add a note in `extraction_notes`.
+
+Respond ONLY with valid JSON in this exact shape:
+{
+    "patient_name": string | null,
+    "patient_id": string | null,
+    "patient_age": integer | null,
+    "patient_gender": "Male" | "Female" | null,
+    "patient_state": string | null,
+    "provider_name": string | null,
+    "provider_specialty": string | null,
+    "diagnosis_code": string | null,
+    "procedure_code": string | null,
+    "visit_type": string | null,
+    "length_of_stay": number | null,
+    "insurance_type": string | null,
+    "claim_amount": number | null,
+    "extraction_notes": string | null
+}
+"""
+
+
+async def extract_metadata_from_docs(combined_text: str) -> dict:
+    """Extracts structured claim metadata from OCR'd document text. Returns a dict
+    with whichever fields could be confidently identified; missing fields are absent."""
+    if not combined_text or not combined_text.strip():
+        return {}
+    llm = get_llm()
+    messages = [
+        SystemMessage(content=METADATA_EXTRACTION_PROMPT),
+        HumanMessage(content=combined_text[:12000]),
+    ]
+    try:
+        response = await llm.ainvoke(messages)
+        parsed = _safe_parse_json(response.content)
+    except Exception as e:
+        logger.error(f"Metadata extraction failed: {e}")
+        return {}
+
+    out = {}
+    for key in (
+        "patient_name", "patient_id",
+        "patient_age", "patient_gender", "patient_state",
+        "provider_name", "provider_specialty",
+        "diagnosis_code", "procedure_code",
+        "visit_type", "length_of_stay", "insurance_type",
+        "claim_amount",
+    ):
+        val = parsed.get(key)
+        if val is None:
+            continue
+        if isinstance(val, str) and not val.strip():
+            continue
+        out[key] = val
+    if parsed.get("extraction_notes"):
+        out["extraction_notes"] = parsed["extraction_notes"]
+    return out
+
+
 async def process_pre_auth_case(pre_auth_id: str, insurer_id: str, attachments: list):
     """Background task to handle OCR extraction and AI evaluation."""
     logger.info(f"Starting background processing for Pre-Auth: {pre_auth_id}")
-    
+
     # 1. Perform OCR on all documents
     for att in attachments:
         try:
             # att is a dict with file_name, content_type, content (base64)
             extracted_text = await extract_text_from_file(att["content"], att["content_type"])
-            
+
             # Update the existing document record with extracted text
             supabase.table("pre_auth_documents").update({
                 "extracted_text": extracted_text
             }).eq("pre_auth_id", pre_auth_id).eq("file_name", att["file_name"]).execute()
-            
+
         except Exception as e:
             logger.error(f"Background OCR failed for {att['file_name']}: {e}")
 
-    # 2. Run the actual clinical evaluation
+    # 2. Pull all OCR'd text back and extract structured metadata from the docs.
+    #    This replaces the patient/provider fields the provider used to type into
+    #    the dropoff form — we now derive them from the documents themselves.
+    docs_res = supabase.table("pre_auth_documents").select(
+        "file_name, extracted_text"
+    ).eq("pre_auth_id", pre_auth_id).execute()
+
+    if docs_res.data:
+        combined = "\n\n".join(
+            f"--- {d['file_name']} ---\n{d.get('extracted_text') or ''}"
+            for d in docs_res.data
+        )
+        metadata = await extract_metadata_from_docs(combined)
+        if metadata:
+            updates = {k: v for k, v in metadata.items() if k != "extraction_notes"}
+            if updates:
+                logger.info(
+                    f"Pre-Auth {pre_auth_id}: extracted metadata fields "
+                    f"{list(updates.keys())}"
+                )
+                try:
+                    supabase.table("pre_auth_requests").update(updates).eq(
+                        "id", pre_auth_id
+                    ).execute()
+                except Exception as e:
+                    logger.error(f"Failed to persist extracted metadata: {e}")
+
+    # 3. Run the actual clinical evaluation
     await evaluate_pre_auth(pre_auth_id, insurer_id)
 
 # --- CORE SERVICES ---
+def _persist_decision(pre_auth_id: str, decision: str, rationale: str):
+    new_status = "escalated" if decision == "escalate" else decision
+    supabase.table("pre_auth_requests").update({
+        "status": new_status,
+        "ai_decision": decision,
+        "ai_rationale": rationale,
+    }).eq("id", pre_auth_id).execute()
+
+
+def _safe_parse_json(raw: str) -> dict:
+    try:
+        parsed = json.loads(extract_json_from_text(raw))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
 async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
-    """Orchestrates the 2-Layer Defense: Fraud Model -> RAG Policy -> LLM Clinical Triage."""
+    """Trained model is the gatekeeper. LLM is invoked only on flagged claims to
+    investigate the WHY. Outcome tiers:
+      - low / insufficient_data  -> auto-approve (skip LLM)
+      - high  (>70, <90)         -> LLM may approve or escalate (with evidence)
+      - extreme (>=90)           -> LLM may approve, escalate, or deny (with evidence)
+    """
     logger.info(f"Starting Evaluation Pipeline for Pre-Auth: {pre_auth_id}")
-    
+
     # 1. Fetch the Request Details
     req_res = supabase.table("pre_auth_requests").select("*").eq("id", pre_auth_id).execute()
     if not req_res.data:
@@ -217,103 +446,221 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
         return
     request_data = req_res.data[0]
 
+    # 2. Run trained statistical model first.
     fraud_result = await check_fraud_system(request_data)
-    fraud_context = "No significant statistical fraud flags detected."
-    
-    if fraud_result["risk_level"] == "high":
-        flags_str = ", ".join(fraud_result["flags"])
-        fraud_context = f"CRITICAL WARNING: The anti-fraud system has flagged this claim as HIGH RISK (Score: {fraud_result['fraud_score']}%). Flags: {flags_str}. Please scrutinize the clinical documents for inconsistencies."
-    elif fraud_result["risk_level"] == "medium":
-        flags_str = ", ".join(fraud_result["flags"])
-        fraud_context = f"NOTICE: Medium risk flags detected: {flags_str}."
+    risk_level = fraud_result.get("risk_level")
+    fraud_score = fraud_result.get("fraud_score")
+    flags = fraud_result.get("flags", [])
 
-    # ==========================================
-    # LAYER 2: CLINICAL LLM TRIAGE
-    # ==========================================
-    # 2. Fetch all documents for this case
-    docs_res = supabase.table("pre_auth_documents").select("file_name, extracted_text").eq("pre_auth_id", pre_auth_id).execute()
-    
-    if not docs_res.data:
-        logger.error("No documents found for this pre-auth.")
-        # If no docs, we can't evaluate, but we should at least update status to show we tried
-        supabase.table("pre_auth_requests").update({
-            "status": "escalated",
-            "ai_decision": "escalate",
-            "ai_rationale": "No documents found for clinical review."
-        }).eq("id", pre_auth_id).execute()
+    # 2a. Auto-approve clean claims — skip LLM entirely.
+    if risk_level == "low":
+        rationale = (
+            "This pre-authorisation request has been approved. The submitted "
+            "documentation aligns with our standard review criteria, and no "
+            "concerns were identified during our automated assessment. The claim "
+            "is authorised for processing."
+        )
+        logger.info(f"Pre-Auth {pre_auth_id}: AUTO-APPROVE (low risk, score={fraud_score}%)")
+        _persist_decision(pre_auth_id, "approve", rationale)
         return
 
-    # 3. Combine all documents into one context window
+    if risk_level == "insufficient_data":
+        rationale = (
+            "We are unable to complete the review of this pre-authorisation "
+            "request at this time. The supporting documentation does not contain "
+            "enough clinical detail for a comprehensive assessment.\n\n"
+            "Please resubmit with complete clinical records that include:\n"
+            "- A clear statement of the diagnosis\n"
+            "- The proposed procedure or treatment\n"
+            "- Patient demographics (age and gender)\n"
+            "- Expected length of stay, where applicable\n"
+            "- Supporting clinical justification from the treating physician\n\n"
+            "Once the additional information is received, we will conduct a full review."
+        )
+        logger.info(
+            f"Pre-Auth {pre_auth_id}: AUTO-DENY (insufficient data); "
+            f"flags={flags}"
+        )
+        _persist_decision(pre_auth_id, "deny", rationale)
+        return
+
+    # 2b. Flagged: high or extreme. Continue to LLM investigation.
+    is_extreme = risk_level == "extreme"
+    tier_name = "EXTREME" if is_extreme else "HIGH"
+    logger.info(
+        f"Pre-Auth {pre_auth_id}: flagged {tier_name} (score={fraud_score}%) — "
+        "invoking LLM clinical triage."
+    )
+
+    # 3. Fetch documents
+    docs_res = supabase.table("pre_auth_documents").select(
+        "file_name, extracted_text"
+    ).eq("pre_auth_id", pre_auth_id).execute()
+
+    if not docs_res.data:
+        logger.error(
+            f"Pre-Auth {pre_auth_id}: no documents found "
+            f"(tier {tier_name}, score={fraud_score}%)"
+        )
+        _persist_decision(
+            pre_auth_id,
+            "escalate",
+            "This pre-authorisation request has been forwarded to a medical "
+            "reviewer for further evaluation. The supporting clinical "
+            "documentation was not received with the submission, so we are "
+            "unable to complete an automated review. A reviewer will be in "
+            "touch to request the necessary records.",
+        )
+        return
+
     combined_clinical_context = "=== CLINICAL DOCUMENTS ===\n\n"
     for doc in docs_res.data:
-        combined_clinical_context += f"--- Document: {doc['file_name']} ---\n{doc['extracted_text']}\n\n"
+        combined_clinical_context += (
+            f"--- Document: {doc['file_name']} ---\n{doc['extracted_text']}\n\n"
+        )
 
     # 4. RAG: Fetch relevant policy rules
     embeddings_model = get_embeddings()
-    query_vector = embeddings_model.embed_query(combined_clinical_context[:2000]) 
-    
+    query_vector = embeddings_model.embed_query(combined_clinical_context[:2000])
     policy_res = supabase.rpc("match_policy_rules", {
         "query_embedding": query_vector,
         "match_threshold": 0.3,
         "match_count": 5,
-        "p_insurer_id": insurer_id
+        "p_insurer_id": insurer_id,
     }).execute()
-    
     policy_rules = "Standard medical necessity guidelines apply."
     if policy_res.data:
-        policy_rules = "\n".join([match["content"] for match in policy_res.data])
+        policy_rules = "\n".join([m["content"] for m in policy_res.data])
 
-    # 5. Ask the LLM to reason (Injecting Expected Details to prevent Identity Fraud)
-    logger.info("fraud_context: " + fraud_context)
-    llm = get_llm()
+    # 5. Build tier-aware prompt
+    deny_option = DENY_OPTION_TEXT if is_extreme else ""
+    deny_constraint = DENY_CONSTRAINT_TEXT if is_extreme else ""
+    or_deny_text = " or deny" if is_extreme else ""
+    or_deny_schema = ' | "deny"' if is_extreme else ""
+    fraud_flags_str = "; ".join(flags) if flags else "(no specific flags)"
+
     prompt = PRE_AUTH_SYSTEM_PROMPT.format(
+        tier_name=tier_name,
+        fraud_score=fraud_score,
+        fraud_flags=fraud_flags_str,
         expected_patient_name=request_data.get("patient_name", "Unknown"),
         expected_patient_id=request_data.get("patient_id", "Unknown"),
         expected_provider_name=request_data.get("provider_name", "Unknown"),
         expected_age=request_data.get("patient_age", "Unknown"),
-        expected_gender=request_data.get("gender", "Unknown"),
-        expected_procedure=request_data.get("procedure", "Unknown"),
-        expected_diagnosis=request_data.get("diagnosis", "Unknown"),
+        expected_gender=request_data.get("patient_gender", "Unknown"),
+        expected_procedure=request_data.get("procedure_code", "Unknown"),
+        expected_diagnosis=request_data.get("diagnosis_code", "Unknown"),
         policy_rules=policy_rules,
-        fraud_context=fraud_context
+        deny_option=deny_option,
+        deny_constraint=deny_constraint,
+        or_deny=or_deny_text,
+        or_deny_schema=or_deny_schema,
     )
-    
+
     messages = [
         SystemMessage(content=prompt),
-        HumanMessage(content=combined_clinical_context)
+        HumanMessage(content=combined_clinical_context),
     ]
-    
+    llm = get_llm()
     response = await llm.ainvoke(messages)
-    json_str = extract_json_from_text(response.content)
-    
+    result = _safe_parse_json(response.content)
+
+    # 6. Tier-aware validation: deny only allowed for extreme tier.
+    def _validate_with_tier(parsed: dict) -> tuple[bool, str]:
+        ok, why = _validate_decision(parsed)
+        if not ok:
+            return ok, why
+        decision = str(parsed.get("decision", "")).strip().lower()
+        if decision == "deny" and not is_extreme:
+            return False, "deny is only allowed when the fraud tier is EXTREME (>=90%)"
+        return True, ""
+
+    is_valid, reason = _validate_with_tier(result)
+
+    if not is_valid:
+        logger.warning(f"LLM decision rejected ({reason}). Re-prompting once.")
+        allowed_decisions = "approve, escalate" + (", or deny" if is_extreme else "")
+        correction = HumanMessage(content=(
+            f"Your previous response was rejected: {reason}.\n\n"
+            "Required corrections:\n"
+            f"  - `decision` must be one of: {allowed_decisions}.\n"
+            "  - If `decision` is anything other than `approve`, the `evidence` "
+            "array must contain at least one entry whose `finding` names a "
+            "SPECIFIC field, value, document quote, or contradiction. Generic "
+            "references to the fraud score, the review process, or vague phrases "
+            "like 'further review' are NOT evidence.\n"
+            "  - If you cannot cite something specific, choose `approve` — your "
+            "document-level investigation is authoritative.\n\n"
+            "Respond ONLY with the corrected JSON, no commentary."
+        ))
+        messages.extend([response, correction])
+        response = await llm.ainvoke(messages)
+        result = _safe_parse_json(response.content)
+        is_valid, reason = _validate_with_tier(result)
+
     try:
-        result = json.loads(json_str)
         if not result:
-            raise ValueError("Parsed JSON was empty.")
-            
-        decision = result.get("decision", "escalate")
-        rationale = result.get("rationale", "No rationale provided by AI.")
-        
-        # 6. Update Database
-        new_status = 'escalated' if decision == 'escalate' else decision
-        
-        supabase.table("pre_auth_requests").update({
-            "status": new_status,
-            "ai_decision": decision,
-            "ai_rationale": rationale
-        }).eq("id", pre_auth_id).execute()
-        
-        logger.info(f"Pre-Auth {pre_auth_id} evaluated. Decision: {decision}")
-        
+            raise ValueError("Parsed JSON was empty after re-prompt.")
+
+        decision = str(result.get("decision", "")).strip().lower()
+        rationale = result.get("rationale") or "No rationale provided by AI."
+        evidence = result.get("evidence")
+
+        if not is_valid:
+            logger.error(
+                f"Pre-Auth {pre_auth_id}: LLM still invalid after re-prompt "
+                f"({reason}); original decision={decision}, "
+                f"tier={tier_name}, score={fraud_score}%"
+            )
+            # Bad-evidence escalate -> approve. Bad-evidence deny -> escalate.
+            # The technical reason is logged above; user-facing rationale stays clean.
+            if decision == "deny":
+                decision = "escalate"
+                rationale = (
+                    "This pre-authorisation request has been forwarded to a "
+                    "medical reviewer for further evaluation. Some aspects of "
+                    "the submitted documentation warrant a closer look before "
+                    "a final determination can be made."
+                )
+                evidence = None
+            elif decision == "escalate":
+                decision = "approve"
+                rationale = (
+                    "This pre-authorisation request has been approved. After "
+                    "reviewing the submitted documentation against the applicable "
+                    "policy, the claim meets our review criteria and is "
+                    "authorised for processing."
+                )
+                evidence = None
+            else:
+                decision = "escalate"
+                rationale = (
+                    "This pre-authorisation request has been forwarded to a "
+                    "medical reviewer for further evaluation. A clinician will "
+                    "review the submitted documentation in detail before a "
+                    "final decision is issued."
+                )
+                evidence = None
+
+        rationale = _format_rationale_with_evidence(rationale, evidence)
+        _persist_decision(pre_auth_id, decision, rationale)
+        logger.info(
+            f"Pre-Auth {pre_auth_id} evaluated. Tier: {tier_name} ({fraud_score}%). "
+            f"Decision: {decision}"
+        )
+
     except Exception as e:
-        logger.error(f"Failed to parse AI Pre-Auth Decision: {e}")
-        logger.error(f"RAW LLM OUTPUT WAS: {response.content}")
-        
-        supabase.table("pre_auth_requests").update({
-            "status": "escalated",
-            "ai_decision": "escalate",
-            "ai_rationale": f"AI Triage flagged this for review.\n\n### Raw Reasoning:\n\n{response.content}"
-        }).eq("id", pre_auth_id).execute()
+        logger.error(
+            f"Pre-Auth {pre_auth_id}: failed to parse AI decision: {e}; "
+            f"raw output: {response.content!r}"
+        )
+        _persist_decision(
+            pre_auth_id,
+            "escalate",
+            "This pre-authorisation request has been forwarded to a medical "
+            "reviewer for further evaluation. A clinician will review the "
+            "submitted documentation in detail before a final decision is issued.",
+        )
 
 async def process_and_embed_policy_file(insurer_id: str, base64_data: str, file_name: str = ""):
     """Called once when an insurer uploads their policy. Chunks the PDF/Word and saves to Supabase."""

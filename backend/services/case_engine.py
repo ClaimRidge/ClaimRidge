@@ -84,10 +84,10 @@ async def generate_fraud_case_file(pre_auth_id: str, fraud_score: float, anomaly
         
         ### CLAIM DETAILS (From Portal) ###
         Patient: {claim_data.get('patient_name')} | ID: {claim_data.get('patient_id')}
-        Age/Gender: {claim_data.get('patient_age')} / {claim_data.get('gender')}
-        Procedure Requested: {claim_data.get('procedure')}
-        Diagnosis: {claim_data.get('diagnosis')}
-        Requested Amount: {claim_data.get('requested_amount')} {claim_data.get('currency')}
+        Age/Gender: {claim_data.get('patient_age')} / {claim_data.get('patient_gender')}
+        Procedure Requested: {claim_data.get('procedure_code')}
+        Diagnosis: {claim_data.get('diagnosis_code')}
+        Requested Amount: {claim_data.get('claim_amount')} {claim_data.get('currency')}
         Provider: {claim_data.get('provider_name')}
         
         ### CLINICAL DOCUMENTS (OCR Extraction) ###
