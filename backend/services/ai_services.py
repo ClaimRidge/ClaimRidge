@@ -13,6 +13,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from core.config import Config
 from core.database import supabase
 from services.fraud_service import fraud_detector
+from services.code_lookup import (
+    describe_diagnosis,
+    describe_procedure,
+    format_code_with_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,8 @@ PRE_AUTH_SYSTEM_PROMPT = """You are ClaimRidge AI, a clinical triage investigato
 - Provider Name: **{expected_provider_name}**
 - Requested Procedure: **{expected_procedure}**
 - Stated Diagnosis: **{expected_diagnosis}**
+
+The Requested Procedure and Stated Diagnosis above show the submitted code followed by its description from the local CPT/ICD-10 catalogue. Use the description to judge whether the clinical narrative in the documents is coherent with what was actually requested. If a description says "(description not in local catalogue)", fall back to the document text and treat the code itself as opaque.
 
 ## PAYER POLICY RULES (RAG Context)
 {policy_rules}
@@ -433,7 +440,11 @@ def _safe_parse_json(raw: str) -> dict:
 async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
     """Trained model is the gatekeeper. LLM is invoked only on flagged claims to
     investigate the WHY. Outcome tiers:
-      - low / insufficient_data  -> auto-approve (skip LLM)
+      - low                      -> auto-approve (skip LLM)
+      - insufficient_data        -> escalate to human reviewer for a data-quality
+                                    follow-up. NOT a denial — the score is
+                                    unreliable, so there is no clinical or policy
+                                    basis on which to refuse the claim.
       - high  (>70, <90)         -> LLM may approve or escalate (with evidence)
       - extreme (>=90)           -> LLM may approve, escalate, or deny (with evidence)
     """
@@ -466,22 +477,25 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
 
     if risk_level == "insufficient_data":
         rationale = (
-            "We are unable to complete the review of this pre-authorisation "
-            "request at this time. The supporting documentation does not contain "
-            "enough clinical detail for a comprehensive assessment.\n\n"
-            "Please resubmit with complete clinical records that include:\n"
+            "This pre-authorisation request has been forwarded to a medical "
+            "reviewer because the supporting documentation does not contain "
+            "enough clinical detail to complete an automated review. This is "
+            "not a determination on the merits of the request.\n\n"
+            "To help the reviewer proceed, please provide complete clinical "
+            "records that include:\n"
             "- A clear statement of the diagnosis\n"
             "- The proposed procedure or treatment\n"
             "- Patient demographics (age and gender)\n"
             "- Expected length of stay, where applicable\n"
             "- Supporting clinical justification from the treating physician\n\n"
-            "Once the additional information is received, we will conduct a full review."
+            "Once the additional information is received, the reviewer will "
+            "conduct a full assessment."
         )
         logger.info(
-            f"Pre-Auth {pre_auth_id}: AUTO-DENY (insufficient data); "
-            f"flags={flags}"
+            f"Pre-Auth {pre_auth_id}: ESCALATE (insufficient data — score "
+            f"unreliable, routed to human reviewer); flags={flags}"
         )
-        _persist_decision(pre_auth_id, "deny", rationale)
+        _persist_decision(pre_auth_id, "escalate", rationale)
         return
 
     # 2b. Flagged: high or extreme. Continue to LLM investigation.
@@ -539,6 +553,15 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
     or_deny_schema = ' | "deny"' if is_extreme else ""
     fraud_flags_str = "; ".join(flags) if flags else "(no specific flags)"
 
+    procedure_code = request_data.get("procedure_code")
+    diagnosis_code = request_data.get("diagnosis_code")
+    expected_procedure = format_code_with_description(
+        procedure_code, describe_procedure(procedure_code)
+    )
+    expected_diagnosis = format_code_with_description(
+        diagnosis_code, describe_diagnosis(diagnosis_code)
+    )
+
     prompt = PRE_AUTH_SYSTEM_PROMPT.format(
         tier_name=tier_name,
         fraud_score=fraud_score,
@@ -548,8 +571,8 @@ async def evaluate_pre_auth(pre_auth_id: str, insurer_id: str):
         expected_provider_name=request_data.get("provider_name", "Unknown"),
         expected_age=request_data.get("patient_age", "Unknown"),
         expected_gender=request_data.get("patient_gender", "Unknown"),
-        expected_procedure=request_data.get("procedure_code", "Unknown"),
-        expected_diagnosis=request_data.get("diagnosis_code", "Unknown"),
+        expected_procedure=expected_procedure,
+        expected_diagnosis=expected_diagnosis,
         policy_rules=policy_rules,
         deny_option=deny_option,
         deny_constraint=deny_constraint,

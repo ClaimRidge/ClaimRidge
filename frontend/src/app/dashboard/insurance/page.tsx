@@ -125,10 +125,6 @@ export default function InsurerDashboardPage() {
       {/* Welcome Header */}
       <div className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-2 h-2 rounded-full bg-[#16a34a] animate-ping" />
-            <span className="text-[10px] font-black text-[#16a34a] uppercase tracking-[0.3em]">Live Medical Operations</span>
-          </div>
           <h1 className="font-display text-4xl sm:text-5xl font-extrabold text-[#0a0a0a] tracking-tight">
             Medical <span className="text-[#16a34a]">Intelligence</span> Hub
           </h1>
@@ -288,4 +284,4 @@ export default function InsurerDashboardPage() {
       </div>
     </div>
   );
-}
+}
