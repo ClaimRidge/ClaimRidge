@@ -1,28 +1,37 @@
 -- ============================================================================
--- ClaimRidge — unified schema reference
--- ----------------------------------------------------------------------------
--- This is the source-of-truth schema for the merged provider + insurer
--- platform. To install on a fresh Supabase project, run
--- `migrations/002_clean_reset.sql` (which drops any existing ClaimRidge tables
--- and recreates them from scratch).
+-- 002_clean_reset.sql
 --
--- Design principles:
---   • `profiles` is THIN — only user-level fields (one row per auth.users).
---   • Organisations live in their own tables: `insurers` (payer companies)
---     and `provider_orgs` (hospitals / clinics).
---   • Membership / staff relationships are dedicated join columns/tables:
---       profiles.insurer_id      — insurer staff
---       profiles.provider_org_id — provider admin owning the org
---       doctor_org_links         — doctors affiliated with one or more orgs
+-- WARNING: DESTRUCTIVE. This drops ALL ClaimRidge tables and recreates them
+-- from scratch with the clean schema. It is the right script to run when
+-- you are restructuring the platform and the existing rows are test data.
+--
+-- It does NOT touch auth.users. To wipe users, do that separately in the
+-- Supabase Auth dashboard or via the admin API.
 -- ============================================================================
+
+-- 1. Drop everything in reverse-FK order.
+DROP TABLE IF EXISTS public.ai_inference_log     CASCADE;
+DROP TABLE IF EXISTS public.audit_log            CASCADE;
+DROP TABLE IF EXISTS public.claims_audit         CASCADE;
+DROP TABLE IF EXISTS public.claim_lines          CASCADE;
+DROP TABLE IF EXISTS public.claims               CASCADE;
+DROP TABLE IF EXISTS public.pre_auth_documents   CASCADE;
+DROP TABLE IF EXISTS public.pre_auth_requests    CASCADE;
+DROP TABLE IF EXISTS public.policy_chunks        CASCADE;
+DROP TABLE IF EXISTS public.doctor_org_links     CASCADE;
+DROP TABLE IF EXISTS public.doctor_orgs          CASCADE;  -- old name
+DROP TABLE IF EXISTS public.profiles             CASCADE;
+DROP TABLE IF EXISTS public.provider_orgs        CASCADE;
+DROP TABLE IF EXISTS public.insurers             CASCADE;
+
+DROP FUNCTION IF EXISTS public.match_policy_rules(vector, float, int, uuid);
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- ============================================================================
--- TENANT / ORG ROOTS
+-- 2. ORG ROOTS
 -- ============================================================================
 
--- Insurance companies (payers).
 CREATE TABLE public.insurers (
   id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name                        text NOT NULL,
@@ -35,12 +44,11 @@ CREATE TABLE public.insurers (
   updated_at                  timestamptz DEFAULT now()
 );
 
--- Hospitals / clinics on the provider side.
 CREATE TABLE public.provider_orgs (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name            text NOT NULL,
   name_ar         text,
-  org_code        text NOT NULL UNIQUE,      -- shareable code for doctors to join
+  org_code        text NOT NULL UNIQUE,
   license_number  text UNIQUE,
   country         text DEFAULT 'Jordan',
   address         text,
@@ -51,7 +59,7 @@ CREATE TABLE public.provider_orgs (
 );
 
 -- ============================================================================
--- USERS (1 row per auth.users)
+-- 3. USERS
 -- ============================================================================
 
 CREATE TABLE public.profiles (
@@ -59,34 +67,20 @@ CREATE TABLE public.profiles (
   account_type    text NOT NULL CHECK (account_type IN ('provider','doctor','insurance')),
   full_name       text,
   contact_email   text,
-
-  -- INSURER STAFF (account_type = 'insurance')
   insurer_id      uuid REFERENCES public.insurers(id)      ON DELETE SET NULL,
-  role            text,  -- 'admin' | 'medical_officer'
-
-  -- PROVIDER ADMIN (account_type = 'provider')
-  -- The provider_org_id points to the hospital they own.
-  -- DOCTOR (account_type = 'doctor')
-  -- The provider_org_id is their primary affiliation (or NULL = solo).
+  role            text,
   provider_org_id uuid REFERENCES public.provider_orgs(id) ON DELETE SET NULL,
-
-  -- DOCTOR-SPECIFIC
   doctor_specialty       text,
   doctor_license_number  text,
-
-  -- Misc per-user prefs
   config          jsonb DEFAULT '{}'::jsonb,
   created_at      timestamptz DEFAULT now(),
   updated_at      timestamptz DEFAULT now()
 );
 
-CREATE INDEX profiles_account_type_idx     ON public.profiles(account_type);
-CREATE INDEX profiles_insurer_id_idx       ON public.profiles(insurer_id)
-                                           WHERE insurer_id IS NOT NULL;
-CREATE INDEX profiles_provider_org_id_idx  ON public.profiles(provider_org_id)
-                                           WHERE provider_org_id IS NOT NULL;
+CREATE INDEX profiles_account_type_idx    ON public.profiles(account_type);
+CREATE INDEX profiles_insurer_id_idx      ON public.profiles(insurer_id)      WHERE insurer_id     IS NOT NULL;
+CREATE INDEX profiles_provider_org_id_idx ON public.profiles(provider_org_id) WHERE provider_org_id IS NOT NULL;
 
--- Doctors may be linked to multiple hospitals; this is the many-to-many join.
 CREATE TABLE public.doctor_org_links (
   doctor_id        uuid NOT NULL REFERENCES public.profiles(id)      ON DELETE CASCADE,
   provider_org_id  uuid NOT NULL REFERENCES public.provider_orgs(id) ON DELETE CASCADE,
@@ -95,7 +89,7 @@ CREATE TABLE public.doctor_org_links (
 );
 
 -- ============================================================================
--- POLICY EMBEDDINGS (insurer-side RAG)
+-- 4. POLICY EMBEDDINGS
 -- ============================================================================
 
 CREATE TABLE public.policy_chunks (
@@ -109,23 +103,19 @@ CREATE TABLE public.policy_chunks (
 CREATE INDEX policy_chunks_insurer_id_idx ON public.policy_chunks(insurer_id);
 
 -- ============================================================================
--- INSURER-SIDE: PRE-AUTH REQUESTS + DOCUMENTS
+-- 5. INSURER-SIDE: PRE-AUTH
 -- ============================================================================
 
 CREATE TABLE public.pre_auth_requests (
   id                              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   insurer_id                      uuid NOT NULL REFERENCES public.insurers(id) ON DELETE CASCADE,
   reference_number                text NOT NULL UNIQUE,
-
-  -- identity (extracted from uploaded docs)
   provider_name                   text NOT NULL,
   patient_name                    text NOT NULL,
   patient_id                      text NOT NULL,
   patient_age                     integer,
   patient_gender                  text,
   patient_state                   text,
-
-  -- clinical
   diagnosis_code                  text,
   procedure_code                  text,
   provider_specialty              text,
@@ -134,19 +124,14 @@ CREATE TABLE public.pre_auth_requests (
   insurance_type                  text,
   claim_amount                    numeric DEFAULT 0,
   currency                        text DEFAULT 'JOD',
-
-  -- workflow
   status                          text NOT NULL DEFAULT 'processing',
   sla_deadline                    timestamptz NOT NULL,
   assigned_to                     uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
   ai_decision                     text,
   ai_rationale                    text,
-
-  -- derived analytics fields (used by fraud model)
   days_between_service_and_claim  integer,
   submission_month                integer,
   submission_day_of_week          integer,
-
   created_at                      timestamptz DEFAULT now(),
   updated_at                      timestamptz DEFAULT now()
 );
@@ -168,47 +153,34 @@ CREATE TABLE public.pre_auth_documents (
 CREATE INDEX pre_auth_documents_pre_auth_id_idx ON public.pre_auth_documents(pre_auth_id);
 
 -- ============================================================================
--- PROVIDER-SIDE: CLAIMS
+-- 6. PROVIDER-SIDE: CLAIMS
 -- ============================================================================
 
 CREATE TABLE public.claims (
   id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   claim_number         text UNIQUE,
-
-  -- WHO submitted, FROM which org, TO which payer
-  user_id              uuid REFERENCES public.profiles(id)      ON DELETE SET NULL, -- submitter
-  clinic_id            uuid REFERENCES public.provider_orgs(id) ON DELETE SET NULL, -- billing org
-  payer_id             uuid REFERENCES public.insurers(id)      ON DELETE SET NULL, -- registered payer (NULL if unregistered)
-
-  -- patient
+  user_id              uuid REFERENCES public.profiles(id)      ON DELETE SET NULL,
+  clinic_id            uuid REFERENCES public.provider_orgs(id) ON DELETE SET NULL,
+  payer_id             uuid REFERENCES public.insurers(id)      ON DELETE SET NULL,
   member_id            text,
   patient_name         text,
   patient_id           text,
-
-  -- denormalised cache (avoid joins in queue listings)
   provider_name        text,
   payer_name           text,
-
-  -- clinical
   date_of_service      date NOT NULL,
   diagnosis_codes      text[],
   procedure_codes      text[],
   total_billed         numeric NOT NULL DEFAULT 0,
   total_allowed        numeric DEFAULT 0,
   currency             text DEFAULT 'JOD',
-
-  -- workflow
   status               text NOT NULL DEFAULT 'intake_complete',
   notes                text,
   scrub_result         jsonb DEFAULT '{}'::jsonb,
   scrub_passed         boolean DEFAULT false,
   scrub_warnings       integer DEFAULT 0,
-
-  -- ai
   ai_risk_score        integer CHECK (ai_risk_score IS NULL OR ai_risk_score BETWEEN 0 AND 100),
   ai_complexity_score  integer CHECK (ai_complexity_score IS NULL OR ai_complexity_score BETWEEN 1 AND 5),
   ai_recommendation    text,
-
   created_at           timestamptz DEFAULT now(),
   updated_at           timestamptz DEFAULT now()
 );
@@ -255,7 +227,7 @@ CREATE INDEX claims_audit_user_id_idx   ON public.claims_audit(user_id);
 CREATE INDEX claims_audit_reference_idx ON public.claims_audit(claim_reference_number);
 
 -- ============================================================================
--- SHARED LOGS
+-- 7. SHARED LOGS
 -- ============================================================================
 
 CREATE TABLE public.audit_log (
@@ -268,8 +240,6 @@ CREATE TABLE public.audit_log (
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- ai_inference_log can reference EITHER a claim (provider) or a pre-auth
--- (insurer). Exactly one of claim_id / pre_auth_id is set per row.
 CREATE TABLE public.ai_inference_log (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   claim_id              uuid REFERENCES public.claims(id)             ON DELETE CASCADE,
@@ -286,7 +256,7 @@ CREATE TABLE public.ai_inference_log (
 );
 
 -- ============================================================================
--- RPC: vector similarity search for policy rules (used by both AI flows)
+-- 8. RPC: vector similarity search for policy rules
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.match_policy_rules(
@@ -312,7 +282,7 @@ END;
 $$;
 
 -- ============================================================================
--- ROW LEVEL SECURITY
+-- 9. RLS POLICIES
 -- ============================================================================
 
 ALTER TABLE public.profiles         ENABLE ROW LEVEL SECURITY;
@@ -320,7 +290,6 @@ ALTER TABLE public.provider_orgs    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.insurers         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.doctor_org_links ENABLE ROW LEVEL SECURITY;
 
--- profiles: every user reads/edits their own row.
 CREATE POLICY profiles_select_own ON public.profiles
   FOR SELECT USING (auth.uid() = id);
 CREATE POLICY profiles_insert_own ON public.profiles
@@ -328,26 +297,23 @@ CREATE POLICY profiles_insert_own ON public.profiles
 CREATE POLICY profiles_update_own ON public.profiles
   FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
 
--- provider_orgs: anyone authenticated can look up by org_code (public-by-design).
 CREATE POLICY provider_orgs_select_all ON public.provider_orgs
   FOR SELECT USING (auth.role() = 'authenticated');
 CREATE POLICY provider_orgs_insert_authenticated ON public.provider_orgs
   FOR INSERT WITH CHECK (auth.role() = 'authenticated');
--- Only the owning provider admin can edit their org.
 CREATE POLICY provider_orgs_update_own ON public.provider_orgs
   FOR UPDATE USING (
     EXISTS (SELECT 1 FROM public.profiles p
-            WHERE p.id = auth.uid() AND p.provider_org_id = provider_orgs.id
+            WHERE p.id = auth.uid()
+              AND p.provider_org_id = provider_orgs.id
               AND p.account_type = 'provider')
   );
 
--- insurers: read-only for everyone (the drop-off portal lists them).
 CREATE POLICY insurers_select_all ON public.insurers
   FOR SELECT USING (true);
 CREATE POLICY insurers_insert_authenticated ON public.insurers
   FOR INSERT WITH CHECK (auth.role() = 'authenticated');
 
--- doctor_org_links: doctors manage their own affiliations.
 CREATE POLICY doctor_org_links_select_own ON public.doctor_org_links
   FOR SELECT USING (auth.uid() = doctor_id
                  OR EXISTS (SELECT 1 FROM public.profiles p
@@ -360,3 +326,7 @@ CREATE POLICY doctor_org_links_delete_own ON public.doctor_org_links
                  OR EXISTS (SELECT 1 FROM public.profiles p
                             WHERE p.id = auth.uid()
                               AND p.provider_org_id = doctor_org_links.provider_org_id));
+
+-- ============================================================================
+-- Done. Old migration file `001_add_provider_side.sql` is now obsolete.
+-- ============================================================================

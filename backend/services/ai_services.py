@@ -756,3 +756,226 @@ async def process_and_embed_policy_file(insurer_id: str, base64_data: str, file_
         await asyncio.sleep(3)
         
     logger.info(f"Finished processing policy for insurer {insurer_id}. Total {len(chunks)} chunks saved.")
+
+
+# ============================================================================
+# PROVIDER-SIDE AI SERVICES
+# Used by /api/claims and /api/intake routers for claim extraction & scrubbing.
+# ============================================================================
+
+from typing import List
+from pydantic import BaseModel as _BaseModel, Field as _Field
+from langchain_core.output_parsers import PydanticOutputParser
+
+
+class FieldString(_BaseModel):
+    value: str = _Field(default="", description="Extracted text. Empty string if not found.")
+    confidence: int = _Field(default=0, description="Confidence 0-100. 0 if not found.")
+
+
+class FieldFloat(_BaseModel):
+    value: float = _Field(default=0.0)
+    confidence: int = _Field(default=0)
+
+
+class FieldStringList(_BaseModel):
+    value: List[str] = _Field(default_factory=list)
+    confidence: int = _Field(default=0)
+
+
+class ClaimExtractionResult(_BaseModel):
+    patient_name: FieldString
+    patient_id: FieldString
+    date_of_service: FieldString = _Field(description="Format YYYY-MM-DD")
+    provider_name: FieldString
+    provider_id: FieldString
+    payer_name: FieldString
+    member_id: FieldString
+    primary_diagnosis: FieldString = _Field(description="Primary ICD-10 code")
+    additional_diagnoses: FieldStringList = _Field(description="Additional ICD-10 codes")
+    primary_procedure: FieldString = _Field(description="Primary CPT/HCPCS code")
+    additional_procedures: FieldStringList = _Field(description="Additional CPT/HCPCS codes")
+    billed_amount: FieldFloat
+    additional_notes: FieldString
+
+
+_claim_parser = PydanticOutputParser(pydantic_object=ClaimExtractionResult)
+
+
+CLAIM_EXTRACTION_PROMPT = """You are an expert medical claims parser.
+Extract the data directly from the provided image.
+
+CRITICAL RULES:
+1. NO HALLUCINATIONS: If a field is NOT clearly present in the image, set its value to "" (or 0) and its confidence to 0. Do not invent notes or IDs.
+2. CONFIDENCE SCORES: Rate your confidence from 0 to 100 based on how clearly you can read the text.
+3. Normalize dates to YYYY-MM-DD.
+
+{format_instructions}
+"""
+
+
+SCRUB_SYSTEM_PROMPT = """You are ClaimRidge AI, an expert medical claims scrubbing engine. You analyze medical insurance claims with the rigor of a senior medical biller and return detailed, actionable feedback.
+
+{unregistered_warning}
+
+## Payer-Specific Policy Rules (CRITICAL)
+Here are the specific policy rules retrieved from this Payer's handbook. You MUST apply these rules to this claim.
+<payer_rules>
+{policy_context}
+</payer_rules>
+
+## Response Format
+Return ONLY valid JSON with this exact structure:
+{{
+  "status": "clean" | "warnings" | "errors",
+  "overall_score": <number 0-100>,
+  "issues": [
+    {{
+      "field": "<exact field name>",
+      "severity": "error" | "warning" | "info",
+      "message": "<specific problem>",
+      "suggestion": "<exact fix>"
+    }}
+  ],
+  "corrected_claim": {{ <corrected version of the input> }},
+  "recommendations": ["<actionable recommendation strings>"],
+  "applied_policy_rules": ["<Quote the exact rules from the payer_rules section that you used>"]
+}}
+"""
+
+
+MEDICAL_REVIEW_PROMPT = """You are ClaimRidge AI, acting as a Chief Medical Officer and Claims Adjudicator for a health insurance company in the MENA region.
+Your task is to review a medical claim specifically for 'Medical Necessity' and 'Clinical Appropriateness' based on standard global clinical guidelines (WHO, NICE, AHA) and local GCC/Levant practices.
+
+## Output Format
+You MUST output a brief, highly professional medical report in Markdown format.
+Use EXACTLY this structure:
+
+### Clinical Decision Recommendation
+**[ APPROVE ]** OR **[ DENY ]** OR **[ INVESTIGATE FURTHER ]**
+
+### Clinical Reasoning
+[1-2 concise paragraphs explaining the medical rationale.]
+
+### Guideline Context
+[Briefly mention standard medical protocols supporting your reasoning.]
+"""
+
+
+async def extract_claim_from_document(file_base64: str, media_type: str) -> dict:
+    """Single-step claim extraction: passes image to Gemini, returns strict JSON."""
+    vision_llm = get_vision_llm()
+    prompt_text = CLAIM_EXTRACTION_PROMPT.format(
+        format_instructions=_claim_parser.get_format_instructions()
+    )
+    image_data_url = f"data:{media_type};base64,{file_base64}"
+    messages = [
+        HumanMessage(content=[
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ])
+    ]
+    logger.info(f"Calling Vision Model ({Config.OCR_MODEL}) for claim extraction...")
+    try:
+        response = await vision_llm.ainvoke(messages)
+        result = _claim_parser.parse(response.content)
+        return result.model_dump()
+    except Exception as e:
+        logger.error(f"Single-step claim extraction failed: {str(e)}")
+        raise ValueError("The AI failed to format the document properly. Please re-upload.") from e
+
+
+async def scrub_claim(claim_data: dict, registered_payer_id: str = None) -> dict:
+    """Scrubs a structured claim against payer policy rules (RAG) and returns issues + corrections."""
+    llm = get_llm()
+    claim_json_str = json.dumps(claim_data, indent=2)
+
+    unregistered_warning = ""
+    policy_context = "No specific payer rules found. Use standard medical billing guidelines."
+    retrieved_chunks = []
+
+    if registered_payer_id:
+        try:
+            search_query = (
+                f"Rules for Diagnoses: {', '.join(claim_data.get('diagnosis_codes', []))} "
+                f"and Procedures: {', '.join(claim_data.get('procedure_codes', []))}"
+            )
+            embeddings_model = get_embeddings()
+            query_vector = embeddings_model.embed_query(search_query)
+            res = supabase.rpc("match_policy_rules", {
+                "query_embedding": query_vector,
+                "match_threshold": 0.4,
+                "match_count": 4,
+                "p_insurer_id": registered_payer_id,
+            }).execute()
+            if res.data:
+                retrieved_chunks = [m["content"] for m in res.data]
+                policy_context = "\n---\n".join(retrieved_chunks)
+        except Exception as e:
+            logger.error(f"RAG retrieval failed: {e}")
+    else:
+        unregistered_warning = (
+            "NOTE: This claim's payer is not registered with ClaimRidge. "
+            "Apply standard medical billing guidelines."
+        )
+
+    system_prompt = SCRUB_SYSTEM_PROMPT.format(
+        unregistered_warning=unregistered_warning,
+        policy_context=policy_context,
+    )
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"Analyze and scrub the following medical claim:\n\n{claim_json_str}"),
+    ]
+    response = await llm.ainvoke(messages)
+    json_str = extract_json_from_text(response.content)
+    try:
+        result = json.loads(json_str)
+        result["retrieved_sources"] = retrieved_chunks
+        return result
+    except Exception as e:
+        logger.error(f"Failed to parse scrub JSON: {str(e)}")
+        raise ValueError("AI returned invalid JSON during scrubbing.") from e
+
+
+async def generate_medical_recommendation(claim_data: dict) -> str:
+    """Generates a clinical medical-necessity recommendation for a claim."""
+    diagnoses = claim_data.get("diagnosis_codes", [])
+    procedures = claim_data.get("procedure_codes", [])
+    if isinstance(diagnoses, list):
+        diagnoses = ", ".join(str(d) for d in diagnoses if d)
+    if isinstance(procedures, list):
+        procedures = ", ".join(str(p) for p in procedures if p)
+
+    patient_name = claim_data.get("patient_name", "Unknown")
+    amount = claim_data.get("billed_amount", claim_data.get("total_billed", "0"))
+
+    prompt = f"""
+    Review the following medical claim for 'Medical Necessity' based on standard clinical guidelines.
+
+    CLAIM DETAILS:
+    - Patient Name: {patient_name}
+    - Diagnosis Codes (ICD-10): {diagnoses}
+    - Procedure Codes (CPT): {procedures}
+    - Billed Amount: {amount}
+
+    Format your response EXACTLY like this:
+
+    **RECOMMENDATION:** [Approve / Deny / Investigate Further]
+
+    **CLINICAL REASONING:** [1-2 paragraphs.]
+
+    **GUIDELINE CONTEXT:** [Standard medical guidelines supporting the reasoning.]
+    """
+
+    llm = get_llm()
+    messages = [
+        SystemMessage(content=MEDICAL_REVIEW_PROMPT),
+        HumanMessage(content=prompt),
+    ]
+    try:
+        response = await llm.ainvoke(messages)
+        return str(response.content)
+    except Exception as e:
+        logger.error(f"Medical recommendation failed for {patient_name}: {e}")
+        raise ValueError("Failed to generate medical necessity recommendation.") from e

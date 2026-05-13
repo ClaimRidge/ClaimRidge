@@ -13,17 +13,26 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  
+
   const supabase = createClient();
   const router = useRouter();
+
+  // Preserve any ?role=doctor&org=ORG-XXX query string so onboarding can
+  // pre-fill the doctor flow.
+  const onboardingTarget = () => {
+    if (typeof window === "undefined") return "/onboarding";
+    const params = new URLSearchParams(window.location.search);
+    const qs = params.toString();
+    return qs ? `/onboarding?${qs}` : "/onboarding";
+  };
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    
+
     if (password !== confirmPassword) {
       setError("Passwords do not match.");
       return;
@@ -36,7 +45,7 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -44,24 +53,29 @@ export default function SignupPage() {
         },
       });
 
-      if (error) {
-        setError(error.message);
+      if (signUpError) {
+        setError(signUpError.message);
+        setLoading(false);
         return;
       }
 
-      // Automatically push them to the workspace setup page
-      router.push("/onboarding");
-      router.refresh();
-    } catch {
-      setError("An unexpected error occurred. Please try again.");
-    } finally {
+      // If email confirmation is on, no session yet — send to login.
+      if (!data.session) {
+        router.push("/login?signup=pending");
+        return;
+      }
+
+      // Otherwise straight into onboarding where they pick a role and finish setup.
+      window.location.assign(onboardingTarget());
+    } catch (err: any) {
+      setError(err?.message || "An unexpected error occurred. Please try again.");
       setLoading(false);
     }
   };
 
   return (
     <div className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center px-4 py-8 bg-[#f9fafb]">
-      <button 
+      <button
         onClick={() => router.push("/")}
         className="mb-6 flex items-center text-sm font-medium text-gray-500 hover:text-gray-900 transition-colors self-start max-w-md mx-auto w-full"
       >
@@ -77,7 +91,7 @@ export default function SignupPage() {
             Create your account
           </h1>
           <p className="text-[#6b7280] mt-1">
-            Set up your AI Pre-Authorisation Engine workspace
+            Join ClaimRidge to streamline your claims.
           </p>
         </div>
 
@@ -91,9 +105,9 @@ export default function SignupPage() {
           <form onSubmit={handleSignup} className="space-y-5">
             <Input
               id="email"
-              label="Work Email"
+              label="Email"
               type="email"
-              placeholder="you@insurancecompany.com"
+              placeholder="you@company.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
