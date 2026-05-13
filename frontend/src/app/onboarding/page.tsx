@@ -44,21 +44,46 @@ export default function OnboardingPage() {
   const [doctorDetails, setDoctorDetails] = useState({
     fullName: "",
     specialty: "",
+    licenseNumber: "",
     orgCode: "",
+    inviteToken: "",
   });
+  const [invitePreview, setInvitePreview] = useState<{ org_name?: string; invited_email?: string } | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const roleParam = params.get("role");
-      const orgParam = params.get("org");
-      if (roleParam === "doctor") {
-        setRole("doctor");
-        setStep(2);
-      }
-      if (orgParam) {
-        setDoctorDetails((prev) => ({ ...prev, orgCode: orgParam.toUpperCase() }));
-      }
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const roleParam = params.get("role");
+    const orgParam = params.get("org");
+    const inviteParam = params.get("invite");
+
+    if (roleParam === "doctor" || inviteParam) {
+      setRole("doctor");
+      setStep(2);
+    }
+    if (orgParam) {
+      setDoctorDetails((prev) => ({ ...prev, orgCode: orgParam.toUpperCase() }));
+    }
+    if (inviteParam) {
+      setDoctorDetails((prev) => ({ ...prev, inviteToken: inviteParam }));
+      (async () => {
+        try {
+          const res = await fetch(
+            `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/invitation-preview/${inviteParam}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.valid) {
+              setInvitePreview({
+                org_name: data.org?.name,
+                invited_email: data.invited_email,
+              });
+            }
+          }
+        } catch {
+          /* preview is non-critical */
+        }
+      })();
     }
   }, []);
 
@@ -181,28 +206,18 @@ export default function OnboardingPage() {
         account_type: role,
         contact_email: user.email,
       };
-      let providerOrgIdForDoctor: string | null = null;
 
       if (role === "doctor") {
-        if (doctorDetails.orgCode) {
-          const { data: org, error: orgError } = await supabase
-            .from("provider_orgs")
-            .select("id")
-            .eq("org_code", doctorDetails.orgCode.toUpperCase())
-            .maybeSingle();
-          if (orgError || !org) {
-            setError("Invalid Organization Code. Leave blank to operate as a solo doctor.");
-            setLoading(false);
-            return;
-          }
-          providerOrgIdForDoctor = org.id;
-        }
-
+        // Doctor profile is created with NO provider_org_id by default.
+        // Affiliation happens after profile creation via:
+        //   1. accept-invite (token-based, auto-links)
+        //   2. join-by-code (creates a pending join request — admin must approve)
+        // The doctor's primary `provider_org_id` is only set once an approval lands.
         profileData = {
           ...profileData,
           full_name: doctorDetails.fullName,
           doctor_specialty: doctorDetails.specialty,
-          provider_org_id: providerOrgIdForDoctor,
+          doctor_license_number: doctorDetails.licenseNumber || null,
         };
       } else if (role === "provider") {
         // Pre-check the license number — surfacing this as a friendly error
@@ -270,11 +285,45 @@ export default function OnboardingPage() {
         return;
       }
 
-      if (role === "doctor" && providerOrgIdForDoctor) {
-        await supabase.from("doctor_org_links").insert({
-          doctor_id: user.id,
-          provider_org_id: providerOrgIdForDoctor,
-        });
+      // Doctor post-profile affiliation flow: invite token wins over code.
+      if (role === "doctor") {
+        const { data: { session } } = await supabase.auth.getSession();
+        const auth = session?.access_token ? `Bearer ${session.access_token}` : "";
+
+        if (doctorDetails.inviteToken) {
+          setLoadingText("Accepting invitation...");
+          const res = await fetch(
+            `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/accept-invite`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: auth },
+              body: JSON.stringify({ token: doctorDetails.inviteToken }),
+            }
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            setError(body?.detail || "Could not accept invitation. The link may be expired or invalid.");
+            setLoading(false);
+            return;
+          }
+        } else if (doctorDetails.orgCode) {
+          setLoadingText("Requesting access to your hospital...");
+          const res = await fetch(
+            `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/join-by-code`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: auth },
+              body: JSON.stringify({ org_code: doctorDetails.orgCode.toUpperCase() }),
+            }
+          );
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            setError(body?.detail || "Could not submit join request.");
+            setLoading(false);
+            return;
+          }
+          // Join request is pending — doctor lands on the dashboard with a "pending approval" banner.
+        }
       }
 
       const target = role === "doctor" ? "/dashboard/doctor" : "/dashboard/provider";
@@ -437,15 +486,35 @@ export default function OnboardingPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Input id="fullName" label="Full Legal Name" value={doctorDetails.fullName} onChange={(e) => setDoctorDetails({ ...doctorDetails, fullName: e.target.value })} required placeholder="Dr. John Doe" />
                 <Input id="specialty" label="Medical Specialty" value={doctorDetails.specialty} onChange={(e) => setDoctorDetails({ ...doctorDetails, specialty: e.target.value })} required placeholder="e.g. Cardiology" />
+                <Input id="licenseNumber" label="Medical License Number" value={doctorDetails.licenseNumber} onChange={(e) => setDoctorDetails({ ...doctorDetails, licenseNumber: e.target.value })} placeholder="e.g. JMC-12345" />
               </div>
 
-              <div className="bg-[#f9fafb] border border-[#e5e7eb] rounded-2xl p-6">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
-                  <Building2 className="h-4 w-4 text-[#16a34a]" /> Hospital Affiliation (Optional)
-                </h3>
-                <p className="text-sm text-[#6b7280] mb-4">Enter your hospital&apos;s organization code to link your account.</p>
-                <Input id="orgCode" label="Organization Code" value={doctorDetails.orgCode} onChange={(e) => setDoctorDetails({ ...doctorDetails, orgCode: e.target.value.toUpperCase() })} placeholder="ORG-XXXXXX" className="max-w-xs font-mono tracking-widest" />
-              </div>
+              {invitePreview ? (
+                <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-2xl p-6">
+                  <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
+                    <Building2 className="h-4 w-4 text-[#16a34a]" /> You&apos;ve been invited
+                  </h3>
+                  <p className="text-sm text-[#374151]">
+                    You&apos;ll be linked to <strong>{invitePreview.org_name}</strong> as soon as you finish setup.
+                  </p>
+                  {invitePreview.invited_email && (
+                    <p className="text-xs text-[#6b7280] mt-1">
+                      Invitation sent to <span className="font-mono">{invitePreview.invited_email}</span>
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-[#f9fafb] border border-[#e5e7eb] rounded-2xl p-6">
+                  <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
+                    <Building2 className="h-4 w-4 text-[#16a34a]" /> Hospital Affiliation (Optional)
+                  </h3>
+                  <p className="text-sm text-[#6b7280] mb-4">
+                    Enter your hospital&apos;s organization code. Your request will be sent to the
+                    hospital admin for approval before you gain access to patient records.
+                  </p>
+                  <Input id="orgCode" label="Organization Code" value={doctorDetails.orgCode} onChange={(e) => setDoctorDetails({ ...doctorDetails, orgCode: e.target.value.toUpperCase() })} placeholder="ORG-XXXXXX" className="max-w-xs font-mono tracking-widest" />
+                </div>
+              )}
 
               <div className="flex gap-4">
                 <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>

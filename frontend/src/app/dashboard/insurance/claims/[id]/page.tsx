@@ -105,6 +105,15 @@ export default function InsurerClaimDetailPage() {
   const supabase = createClient();
   const [generatingAi, setGeneratingAi] = useState(false);
 
+  // Authorization linkage state (lives outside InsurerClaim so we don't need to
+  // expand the shared type for this page only).
+  const [authMeta, setAuthMeta] = useState<{
+    pre_auth_number: string | null;
+    auth_check_status: string | null;
+    auth_check_detail: string | null;
+    pre_auth_id: string | null;
+  }>({ pre_auth_number: null, auth_check_status: null, auth_check_detail: null, pre_auth_id: null });
+
   const handleGenerateRecommendation = async () => {
     if (!claim) return;
     setGeneratingAi(true);
@@ -168,6 +177,12 @@ export default function InsurerClaimDetailPage() {
       };
       
       setClaim(mappedClaim);
+      setAuthMeta({
+        pre_auth_number: claimData.pre_auth_number || null,
+        auth_check_status: claimData.auth_check_status || null,
+        auth_check_detail: claimData.auth_check_detail || null,
+        pre_auth_id: claimData.pre_auth_id || null,
+      });
 
       // 3. Extract the AI flags directly from the JSON column!
       let extractedFlags: ClaimFlag[] = [];
@@ -400,6 +415,9 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
           {/* Decision Actions */}
           <ClaimDecisionActions claim={claim} onDecision={handleDecision} />
 
+          {/* Authorization Check */}
+          <AuthCheckPanel authMeta={authMeta} />
+
           {/* Risk Analysis Card */}
           <AiAnalysisPanel claim={claim} flags={flags} />
 
@@ -423,5 +441,59 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Authorization Check Panel ─────────────────────────
+function AuthCheckPanel({ authMeta }: {
+  authMeta: {
+    pre_auth_number: string | null;
+    auth_check_status: string | null;
+    auth_check_detail: string | null;
+    pre_auth_id: string | null;
+  };
+}) {
+  const status = authMeta.auth_check_status || "not_applicable";
+
+  const config: Record<string, { label: string; bg: string; border: string; text: string; iconBg: string; tone: "ok" | "warn" | "bad" | "info" }> = {
+    ok: { label: "Verified", bg: "bg-[#f0fdf4]", border: "border-[#bbf7d0]", text: "text-[#15803d]", iconBg: "bg-[#16a34a]", tone: "ok" },
+    missing: { label: "Missing", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
+    expired: { label: "Expired", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
+    wrong_patient: { label: "Wrong Patient", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
+    code_mismatch: { label: "Code Mismatch", bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-800", iconBg: "bg-amber-500", tone: "warn" },
+    not_applicable: { label: "None Provided", bg: "bg-gray-50", border: "border-gray-200", text: "text-gray-600", iconBg: "bg-gray-400", tone: "info" },
+  };
+  const c = config[status] || config.not_applicable;
+
+  return (
+    <div className={`border rounded-xl p-5 ${c.bg} ${c.border}`}>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-[#0a0a0a] flex items-center gap-2">
+          <ShieldIcon className={`h-4 w-4 ${c.text}`} /> Authorization Check
+        </h3>
+        <span className={`text-[10px] font-black uppercase tracking-widest text-white px-2 py-0.5 rounded ${c.iconBg}`}>
+          {c.label}
+        </span>
+      </div>
+      {authMeta.pre_auth_number ? (
+        <p className="text-xs font-mono font-bold text-[#0a0a0a] mb-2 break-all">{authMeta.pre_auth_number}</p>
+      ) : (
+        <p className="text-xs text-[#6b7280] italic mb-2">No authorization number was referenced on this claim.</p>
+      )}
+      <p className={`text-xs leading-relaxed ${c.text}`}>{authMeta.auth_check_detail || "—"}</p>
+      {c.tone === "bad" && (
+        <p className="text-[10px] text-red-600 mt-3 font-bold uppercase tracking-widest">
+          Recommended: deny for missing/invalid authorization.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ShieldIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
   );
 }

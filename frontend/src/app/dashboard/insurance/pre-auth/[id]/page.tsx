@@ -33,6 +33,11 @@ interface PreAuthRequest {
   ai_decision: string | null;
   ai_rationale: string | null;
   created_at: string;
+  // Authorization issued on approval
+  authorization_number?: string | null;
+  valid_until?: string | null;
+  approved_procedures?: string[] | null;
+  issued_at?: string | null;
 }
 
 interface PreAuthDocument {
@@ -380,13 +385,59 @@ export default function PreAuthReviewPage() {
             <h3 className="font-display font-bold text-[#0a0a0a] mb-4">Final Adjudication</h3>
             
             {isDecided ? (
-              <div className="text-center py-4">
-                <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${request.status === "approve" ? "bg-green-100" : "bg-red-100"}`}>
-                  {request.status === "approve" ? <CheckCircle className="h-6 w-6 text-[#16a34a]" /> : <XCircle className="h-6 w-6 text-red-600" />}
+              <div className="text-center py-4 space-y-4">
+                <div>
+                  <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${request.status === "approve" ? "bg-green-100" : "bg-red-100"}`}>
+                    {request.status === "approve" ? <CheckCircle className="h-6 w-6 text-[#16a34a]" /> : <XCircle className="h-6 w-6 text-red-600" />}
+                  </div>
+                  <p className="font-bold text-[#0a0a0a]">
+                    This request was {request.status === "approve" ? "approved" : "denied"}.
+                  </p>
                 </div>
-                <p className="font-bold text-[#0a0a0a]">
-                  This request was {request.status === "approve" ? "approved" : "denied"}.
-                </p>
+
+                {/* Authorization number block — visible only on approvals */}
+                {request.status === "approve" && request.authorization_number && (
+                  <div className="text-left bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl p-4">
+                    <p className="text-[10px] uppercase tracking-widest font-bold text-[#15803d] mb-1">
+                      Authorization Number
+                    </p>
+                    <p className="font-mono text-lg font-bold text-[#0a0a0a] tracking-wider break-all">
+                      {request.authorization_number}
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 mt-3 text-xs">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest text-[#15803d] font-bold">Valid Until</p>
+                        <p className="font-bold text-[#0a0a0a] mt-0.5">
+                          {request.valid_until ? new Date(request.valid_until).toLocaleDateString() : "—"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest text-[#15803d] font-bold">Issued</p>
+                        <p className="font-bold text-[#0a0a0a] mt-0.5">
+                          {request.issued_at ? new Date(request.issued_at).toLocaleDateString() : "—"}
+                        </p>
+                      </div>
+                    </div>
+                    {request.approved_procedures && request.approved_procedures.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-[10px] uppercase tracking-widest text-[#15803d] font-bold mb-1">
+                          Approved Scope
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {request.approved_procedures.map((c) => (
+                            <span key={c} className="font-mono text-xs bg-white border border-[#bbf7d0] px-2 py-0.5 rounded text-[#15803d]">
+                              {c}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-[#15803d] mt-3 leading-relaxed">
+                      Share this number with the provider. They must reference it on the claim
+                      they file after service to avoid auth-mismatch denials.
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3">

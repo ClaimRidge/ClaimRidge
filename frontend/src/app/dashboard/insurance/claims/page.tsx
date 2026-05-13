@@ -67,11 +67,30 @@ export default function InsurerClaimsPage() {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
 
-    const { data } = await supabase
+    // Resolve which insurer this user belongs to. Multi-tenant boundary:
+    // we only ever show claims whose payer_id matches the caller's insurer_id.
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("insurer_id, account_type")
+      .eq("id", session.user.id)
+      .maybeSingle();
+    if (!profile?.insurer_id || profile.account_type !== "insurance") {
+      setLoading(false);
+      return;
+    }
+
+    // Unrouted claims have payer_id = NULL, so the payer_id filter already
+    // excludes them. Drop the routing_status filter so claims still show even
+    // if migration 005 hasn't added that column yet.
+    const { data, error } = await supabase
       .from("claims")
       .select("*")
-      .eq("payer_id", session.user.id)
+      .eq("payer_id", profile.insurer_id)
       .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Claims fetch failed:", error);
+    }
 
     if (data) {
       const mappedClaims: InsurerClaim[] = data.map((c: any) => ({
@@ -99,7 +118,11 @@ export default function InsurerClaimsPage() {
         ai_recommendation: null,
         created_at: c.created_at,
         updated_at: c.updated_at || c.created_at,
-      }));
+        // Fraud-layer signals (Layer 1 statistical score on the claim)
+        fraud_score: c.fraud_score,
+        fraud_risk_level: c.fraud_risk_level,
+        fraud_case_id: c.fraud_case_id,
+      } as InsurerClaim & { fraud_score?: number; fraud_risk_level?: string; fraud_case_id?: string }));
       setClaims(mappedClaims);
     }
     setLoading(false);

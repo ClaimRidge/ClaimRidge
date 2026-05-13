@@ -14,6 +14,7 @@ import {
   FileBadge,
   Globe,
   ArrowLeft,
+  Trash2,
 } from "lucide-react";
 
 const MENA_COUNTRIES = [
@@ -119,6 +120,30 @@ export default function InsuranceSettingsPage() {
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
       setError(err.message || "Failed to update settings");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeletePolicy = async () => {
+    if (!window.confirm("Remove the current policy document? The AI will lose access to these rules until a new one is uploaded.")) return;
+    setSaving(true);
+    setError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/policy`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.detail || "Failed to remove policy.");
+      }
+      setFormData(prev => ({ ...prev, policyFileBase64: "", policyFileName: "" }));
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 3000);
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setSaving(false);
     }
@@ -241,9 +266,20 @@ export default function InsuranceSettingsPage() {
               className="w-full px-4 py-3 bg-white border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] rounded-xl text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#f0fdf4] file:text-[#16a34a] hover:file:bg-[#dcfce7] cursor-pointer"
             />
             {formData.policyFileName && (
-              <div className="mt-3 flex items-center gap-2 text-sm text-[#16a34a] font-semibold bg-[#f0fdf4] p-2 rounded-lg border border-[#bbf7d0]">
-                <CheckCircle2 className="h-4 w-4" />
-                <span>{formData.policyFileName}</span>
+              <div className="mt-3 flex items-center justify-between gap-2 text-sm text-[#16a34a] font-semibold bg-[#f0fdf4] p-2 rounded-lg border border-[#bbf7d0]">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                  <span className="truncate">{formData.policyFileName}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleDeletePolicy}
+                  disabled={saving}
+                  title="Remove policy document"
+                  className="p-1.5 rounded-md text-red-500 hover:text-white hover:bg-red-500 transition-colors disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             )}
           </div>

@@ -130,8 +130,63 @@ export default function ClaimForm() {
   const [payerPickerOpen, setPayerPickerOpen] = useState(false);
   const [providerIdHint, setProviderIdHint] = useState<string>("");
   const [registeredPayerUuid, setRegisteredPayerUuid] = useState<string | null>(null);
+
+  // Pre-auth linkage state
+  const [preAuthNumber, setPreAuthNumber] = useState<string>("");
+  const [preAuthLookup, setPreAuthLookup] = useState<{
+    state: "idle" | "loading" | "found" | "not_found" | "expired";
+    detail?: string;
+    patient_name?: string | null;
+    patient_id?: string | null;
+    valid_until?: string | null;
+    approved_procedures?: string[] | null;
+    insurer_name?: string | null;
+  }>({ state: "idle" });
+
   const router = useRouter();
   const pathname = usePathname();
+
+  // Debounced lookup whenever the user types an auth number
+  useEffect(() => {
+    const n = preAuthNumber.trim();
+    if (!n) { setPreAuthLookup({ state: "idle" }); return; }
+    if (n.length < 10) { setPreAuthLookup({ state: "idle" }); return; }
+    setPreAuthLookup({ state: "loading" });
+    const ctl = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        const supabase = createClient();
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/pre-auth-lookup/${encodeURIComponent(n)}`,
+          { headers: { Authorization: `Bearer ${session?.access_token}` }, signal: ctl.signal }
+        );
+        if (res.status === 404) {
+          setPreAuthLookup({ state: "not_found", detail: "No authorization found with that number." });
+          return;
+        }
+        if (!res.ok) {
+          setPreAuthLookup({ state: "not_found", detail: "Lookup failed." });
+          return;
+        }
+        const data = await res.json();
+        setPreAuthLookup({
+          state: data.expired ? "expired" : "found",
+          detail: data.expired
+            ? `Expired on ${new Date(data.valid_until).toLocaleDateString()}.`
+            : `Valid until ${data.valid_until ? new Date(data.valid_until).toLocaleDateString() : "—"}.`,
+          patient_name: data.patient_name,
+          patient_id: data.patient_id,
+          valid_until: data.valid_until,
+          approved_procedures: data.approved_procedures,
+          insurer_name: data.insurer_name,
+        });
+      } catch (e: any) {
+        if (e?.name !== "AbortError") setPreAuthLookup({ state: "not_found", detail: "Network error." });
+      }
+    }, 400);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [preAuthNumber]);
 
   const handleProviderSelect = (provider: Provider) => {
     setForm((prev) => ({
@@ -290,10 +345,13 @@ export default function ClaimForm() {
       const payload = {
         ...form,
         payer_name: form.payer_name,
-        payer_id: registeredPayerUuid || form.payer_name, 
-        member_id: form.payer_id, 
-        confidence_scores: extractedScores, // Optional: Send back to backend to track model performance
-        clinic_id: selectedClinicId
+        // payer_id must be a registered insurer UUID OR empty (= out-of-network,
+        // claim is stored as unrouted).
+        payer_id: registeredPayerUuid || null,
+        member_id: form.payer_id,
+        confidence_scores: extractedScores,
+        clinic_id: selectedClinicId,
+        pre_auth_number: preAuthNumber.trim() || null,
       };
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/scrub`, {
@@ -526,6 +584,19 @@ export default function ClaimForm() {
         <h3 className="font-display text-base sm:text-lg font-bold text-[#0a0a0a] mb-4 pb-2 border-b border-[#e5e7eb]">
           Payer / Insurance Information
         </h3>
+        {form.payer_name && (
+          registeredPayerUuid ? (
+            <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#f0fdf4] border border-[#bbf7d0] text-xs text-[#15803d]">
+              <span className="font-bold">In-network</span>
+              <span>— this claim will be routed directly to the insurer&apos;s queue.</span>
+            </div>
+          ) : (
+            <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
+              <span className="font-bold">Out-of-network</span>
+              <span>— this payer isn&apos;t in our network. The claim will be saved for your records but follow-up must be done manually.</span>
+            </div>
+          )
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="flex gap-2 items-start">
             <div className="flex-1">
@@ -557,6 +628,68 @@ export default function ClaimForm() {
             confidence={extractedScores.payer_id}
             required
           />
+        </div>
+      </section>
+
+      {/* Pre-Authorization Linkage */}
+      <section>
+        <h3 className="font-display text-base sm:text-lg font-bold text-[#0a0a0a] mb-1 pb-2 border-b border-[#e5e7eb]">
+          Pre-Authorization
+        </h3>
+        <p className="text-xs text-[#6b7280] mb-4 mt-2">
+          If you obtained a pre-authorization for this service, paste the number below.
+          We&apos;ll verify the patient, validity window, and approved procedure codes before submission.
+        </p>
+        <div className="space-y-3">
+          <Input
+            id="pre_auth_number"
+            label="Authorization Number (optional)"
+            placeholder="AUTH-YYYYMMDD-XXXXXXXX"
+            value={preAuthNumber}
+            onChange={(e) => setPreAuthNumber(e.target.value.toUpperCase())}
+            className="font-mono"
+          />
+
+          {preAuthLookup.state === "loading" && (
+            <div className="text-xs text-[#9ca3af] flex items-center gap-2">
+              <div className="w-3 h-3 border-2 border-[#16a34a] border-t-transparent rounded-full animate-spin" />
+              Looking up authorization…
+            </div>
+          )}
+
+          {preAuthLookup.state === "found" && (
+            <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg p-3 text-xs">
+              <div className="flex items-center gap-2 font-bold text-[#15803d] mb-2">
+                <CheckCircle className="h-4 w-4" /> Authorization found
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[#15803d]">
+                <div><span className="font-bold">Patient:</span> {preAuthLookup.patient_name || "—"}</div>
+                <div><span className="font-bold">Insurer:</span> {preAuthLookup.insurer_name || "—"}</div>
+                <div className="col-span-2"><span className="font-bold">Validity:</span> {preAuthLookup.detail}</div>
+                {preAuthLookup.approved_procedures && preAuthLookup.approved_procedures.length > 0 && (
+                  <div className="col-span-2">
+                    <span className="font-bold">Approved codes:</span>{" "}
+                    {preAuthLookup.approved_procedures.map((c) => (
+                      <span key={c} className="font-mono ml-1 bg-white border border-[#bbf7d0] px-1.5 py-0.5 rounded">{c}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {(preAuthLookup.state === "expired" || preAuthLookup.state === "not_found") && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs flex items-start gap-2 text-amber-800">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">
+                  {preAuthLookup.state === "expired" ? "Authorization expired" : "Authorization not found"}
+                </p>
+                <p>{preAuthLookup.detail}</p>
+                <p className="mt-1">You can still submit, but the insurer will likely deny this claim for missing or invalid authorization.</p>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 

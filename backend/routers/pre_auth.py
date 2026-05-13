@@ -61,6 +61,20 @@ async def review_pre_auth(id: str, payload: ReviewRequest, current_user = Depend
     if not update_res.data:
         raise HTTPException(status_code=404, detail="Request not found or unauthorized.")
 
+    # 2a. If the reviewer approved it, issue an authorization number. Inverse:
+    # if they reversed an earlier approval, revoke the authorization.
+    issued: dict | None = None
+    action = (payload.action or "").lower()
+    try:
+        from services.authorization import issue_authorization, revoke_authorization
+        if action in {"approve", "approved"}:
+            issued = issue_authorization(id)
+        elif action in {"deny", "denied", "rejected", "escalate", "escalated"}:
+            # Approval was overturned — clear the auth to prevent claims from referencing it.
+            revoke_authorization(id)
+    except Exception as e:
+        logger.error(f"Authorization handling failed for pre-auth {id}: {e}")
+
     # 3. Create an Immutable Audit Log
     try:
         import hashlib
@@ -77,4 +91,8 @@ async def review_pre_auth(id: str, payload: ReviewRequest, current_user = Depend
     except Exception as e:
         logger.error(f"Failed to create audit log for pre-auth {id}: {e}")
 
-    return {"status": "success", "message": f"Request {payload.action}d successfully."}
+    return {
+        "status": "success",
+        "message": f"Request {payload.action}d successfully.",
+        "authorization": issued,
+    }

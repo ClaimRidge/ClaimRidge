@@ -39,6 +39,34 @@ async def process_policy(payload: PolicyUploadRequest, current_user = Depends(ge
         raise HTTPException(status_code=500, detail="Failed to process policy document.")
 
 
+@router.delete("/policy")
+async def delete_policy(current_user = Depends(get_current_user)):
+    """Removes every policy_chunks row for the caller's insurer and clears the
+    cached policy_file_name in insurers.config."""
+    profile_res = supabase.table("profiles").select("insurer_id, account_type").eq("id", current_user.id).execute()
+    if not profile_res.data or profile_res.data[0].get("account_type") != "insurance":
+        raise HTTPException(status_code=403, detail="Not authorized as an insurer.")
+    insurer_id = profile_res.data[0].get("insurer_id")
+    if not insurer_id:
+        raise HTTPException(status_code=403, detail="No insurer linked to profile.")
+
+    try:
+        supabase.table("policy_chunks").delete().eq("insurer_id", insurer_id).execute()
+
+        ins_res = supabase.table("insurers").select("config").eq("id", insurer_id).maybe_single().execute()
+        config = (ins_res.data or {}).get("config") or {}
+        config.pop("policy_file_name", None)
+        supabase.table("insurers").update({
+            "config": config,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", insurer_id).execute()
+
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Failed to delete policy for {insurer_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete policy.")
+
+
 # ---------------------------------------------------------------------------
 # Provider-claims dashboard (legacy provider-side model — uses profiles.account_type='insurance')
 # ---------------------------------------------------------------------------
