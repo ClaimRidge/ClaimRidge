@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { ClaimFormData } from "@/types/claim";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { Plus, X, Send, Upload, FileText, Sparkles, CheckCircle, Search, AlertTriangle, Building2 } from "lucide-react";
+import { Plus, X, Send, Upload, FileText, Sparkles, CheckCircle, Search, AlertTriangle, Building2, Trash2 } from "lucide-react";
 import CodePicker from "@/components/CodePicker";
 import PayerPicker from "@/components/PayerPicker";
 import { ICD10_CODES } from "@/data/icd10";
@@ -26,7 +26,18 @@ const INITIAL_FORM: ClaimFormData = {
   procedure_codes: [""],
   billed_amount: 0,
   notes: "",
+  // Clinical context (fraud detector signals — all optional)
+  patient_age: undefined,
+  patient_gender: "",
+  patient_state: "",
+  visit_type: "",
+  length_of_stay: undefined,
+  insurance_type: "",
+  provider_specialty: "",
 };
+
+const VISIT_TYPES = ["Inpatient", "Outpatient", "Emergency", "Day Surgery"] as const;
+const INSURANCE_TYPES = ["Comprehensive", "Basic", "Government", "Corporate", "Cash"] as const;
 
 // NEW: Updated to match Pydantic Backend output
 interface FieldData {
@@ -48,6 +59,13 @@ interface ExtractedClaim {
   additional_procedures?: FieldData;
   billed_amount?: FieldData;
   additional_notes?: FieldData;
+  patient_age?: FieldData;
+  patient_gender?: FieldData;
+  patient_state?: FieldData;
+  visit_type?: FieldData;
+  length_of_stay?: FieldData;
+  insurance_type?: FieldData;
+  provider_specialty?: FieldData;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -119,8 +137,14 @@ export default function ClaimForm() {
 
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState("");
-  const [extractedFileName, setExtractedFileName] = useState("");
+  // Files queued by the user, waiting for the "Extract" button.
+  const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
+  // Filenames of the docs that successfully filled the form (post-extraction).
+  const [extractedFileNames, setExtractedFileNames] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20MB per file
+  const MAX_FILES = 8;
 
   const [codePicker, setCodePicker] = useState<
     | { type: "diagnosis_codes" | "procedure_codes"; index: number }
@@ -251,6 +275,27 @@ export default function ClaimForm() {
       ...(data.additional_procedures?.value || []),
     ].filter((c, i, arr) => c !== "" || (i === 0 && arr.length === 1));
 
+    const parseIntOrUndef = (v: any): number | undefined => {
+      if (v === "" || v === undefined || v === null) return undefined;
+      const n = parseInt(String(v), 10);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const normalizeVisit = (v: any): ClaimFormData["visit_type"] => {
+      const s = String(v ?? "").trim().toLowerCase();
+      if (!s) return "";
+      if (s.startsWith("inpatient") || s.includes("admitted")) return "Inpatient";
+      if (s.startsWith("emergency") || s === "er" || s === "a&e") return "Emergency";
+      if (s.includes("day surgery") || s.includes("day case")) return "Day Surgery";
+      if (s.startsWith("outpatient") || s.includes("ambulatory") || s === "opd") return "Outpatient";
+      return "";
+    };
+    const normalizeGender = (v: any): ClaimFormData["patient_gender"] => {
+      const s = String(v ?? "").trim().toLowerCase();
+      if (s.startsWith("m")) return "Male";
+      if (s.startsWith("f")) return "Female";
+      return "";
+    };
+
     setForm({
       patient_name: data.patient_name?.value || "",
       patient_id: data.patient_id?.value || "",
@@ -263,6 +308,13 @@ export default function ClaimForm() {
       procedure_codes: procedureCodes.length > 0 ? procedureCodes : [""],
       billed_amount: typeof data.billed_amount?.value === "number" ? data.billed_amount.value : 0,
       notes: data.additional_notes?.value || "",
+      patient_age: parseIntOrUndef(data.patient_age?.value),
+      patient_gender: normalizeGender(data.patient_gender?.value),
+      patient_state: data.patient_state?.value || "",
+      visit_type: normalizeVisit(data.visit_type?.value),
+      length_of_stay: parseIntOrUndef(data.length_of_stay?.value),
+      insurance_type: data.insurance_type?.value || "",
+      provider_specialty: data.provider_specialty?.value || "",
     });
 
     // NOTE: Backend returns 0-100. We round and cap at 100 for safety.
@@ -284,53 +336,90 @@ export default function ClaimForm() {
     });
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const supabase = createClient();
-    const { data: { session } } = await supabase.auth.getSession();
+  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(e.target.files || []);
+    if (incoming.length === 0) return;
 
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
     setExtractError("");
-    setExtractedFileName("");
 
-    if (file.size > 20 * 1024 * 1024) {
-      setExtractError("File too large. Maximum size is 20MB.");
-      return;
+    const tooLarge = incoming.filter((f) => f.size > MAX_FILE_BYTES);
+    const valid = incoming.filter((f) => f.size <= MAX_FILE_BYTES);
+
+    setQueuedFiles((prev) => {
+      // Dedupe by name+size so the same file doesn't enter the queue twice.
+      const key = (f: File) => `${f.name}::${f.size}`;
+      const existing = new Set(prev.map(key));
+      const merged = [...prev, ...valid.filter((f) => !existing.has(key(f)))];
+      return merged.slice(0, MAX_FILES);
+    });
+
+    const overflow = valid.length + queuedFiles.length > MAX_FILES;
+    const messages: string[] = [];
+    if (tooLarge.length > 0) {
+      messages.push(`Skipped ${tooLarge.length} file(s) over 20MB.`);
     }
+    if (overflow) {
+      messages.push(`Only the first ${MAX_FILES} documents are kept.`);
+    }
+    if (messages.length > 0) setExtractError(messages.join(" "));
 
+    // Reset the input so the same file can be re-picked after removal.
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeQueuedFile = (idx: number) => {
+    setQueuedFiles((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const clearQueue = () => {
+    setQueuedFiles([]);
+    setExtractError("");
+  };
+
+  const handleExtractAll = async () => {
+    if (queuedFiles.length === 0 || extracting) return;
+    setExtractError("");
     setExtracting(true);
 
     try {
-      const base64 = await fileToBase64(file);
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const documents = await Promise.all(
+        queuedFiles.map(async (f) => ({
+          fileBase64: await fileToBase64(f),
+          mediaType: f.type,
+          fileName: f.name,
+        }))
+      );
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/extract`, {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${session?.access_token}`
+          Authorization: `Bearer ${session?.access_token}`,
         },
-        body: JSON.stringify({
-          fileBase64: base64,
-          mediaType: file.type,
-          fileName: file.name,
-        }),
+        body: JSON.stringify({ documents }),
       });
 
       const data = await res.json();
-
       if (!res.ok) {
-        throw new Error(data.detail || data.error || "Failed to extract data from document");
+        throw new Error(data.detail || data.error || "Failed to extract data from documents");
       }
 
       applyExtractedData(data.extracted as ExtractedClaim);
-      setExtractedFileName(file.name);
+      setExtractedFileNames(queuedFiles.map((f) => f.name));
     } catch (err) {
-      setExtractError(err instanceof Error ? err.message : "Failed to process the document");
+      setExtractError(err instanceof Error ? err.message : "Failed to process the documents");
     } finally {
       setExtracting(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const formatBytes = (b: number) => {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -342,6 +431,11 @@ export default function ClaimForm() {
     const { data: { session } } = await supabase.auth.getSession();
 
     try {
+      // Fraud-signal fields can be empty strings in the form state; backend
+      // expects nulls / numbers, not blanks.
+      const optNum = (v: unknown) => (v === "" || v === undefined || v === null ? null : Number(v));
+      const optStr = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+
       const payload = {
         ...form,
         payer_name: form.payer_name,
@@ -352,6 +446,14 @@ export default function ClaimForm() {
         confidence_scores: extractedScores,
         clinic_id: selectedClinicId,
         pre_auth_number: preAuthNumber.trim() || null,
+        // Fraud-detector signals — normalised
+        patient_age: optNum(form.patient_age),
+        patient_gender: optStr(form.patient_gender),
+        patient_state: optStr(form.patient_state),
+        visit_type: optStr(form.visit_type),
+        length_of_stay: optNum(form.length_of_stay),
+        insurance_type: optStr(form.insurance_type),
+        provider_specialty: optStr(form.provider_specialty),
       };
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/scrub`, {
@@ -440,7 +542,7 @@ export default function ClaimForm() {
         </section>
       )}
 
-      {/* Document Upload (AI Auto-Fill) */}
+      {/* Document Upload (AI Auto-Fill — multi-document) */}
       <section>
         <div className="flex items-center gap-2 mb-2 flex-wrap">
           <Sparkles className="h-4 w-4 text-[#16a34a]" />
@@ -450,14 +552,17 @@ export default function ClaimForm() {
           </span>
         </div>
         <p className="text-sm text-[#6b7280] mb-4">
-          Upload an existing claim document and we&apos;ll extract the details for you.
+          Upload one or more related documents (claim form, insurance card, clinical note, lab report…).
+          Once you&apos;ve added everything, click <span className="font-semibold text-[#16a34a]">Extract &amp; Auto-Fill</span> —
+          the AI reads them all together and consolidates the fields below.
         </p>
 
+        {/* Drop / browse zone */}
         <div
           className={`relative border-2 border-dashed rounded-xl p-6 transition-colors ${
             extracting
               ? "border-[#16a34a] bg-[#f0fdf4]"
-              : extractedFileName
+              : queuedFiles.length > 0
               ? "border-[#16a34a] bg-[#f0fdf4]"
               : "border-[#d1d5db] bg-[#f9fafb] hover:border-[#16a34a] hover:bg-[#f0fdf4]"
           }`}
@@ -465,42 +570,94 @@ export default function ClaimForm() {
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             accept="application/pdf,image/jpeg,image/png,image/webp"
-            onChange={handleFileUpload}
-            disabled={extracting}
+            onChange={handleFilesSelected}
+            disabled={extracting || queuedFiles.length >= MAX_FILES}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
           />
 
-          {extracting ? (
-            <div className="flex flex-col items-center justify-center text-center py-2 pointer-events-none">
-              <div className="animate-spin h-8 w-8 border-4 border-[#16a34a] border-t-transparent rounded-full mb-3" />
-              <p className="text-sm font-medium text-[#0a0a0a]">Extracting claim data with AI...</p>
-              <p className="text-xs text-[#6b7280] mt-1">This may take up to 10seconds</p>
+          <div className="flex items-center gap-3 pointer-events-none">
+            <div className="flex-shrink-0 w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-[#e5e7eb]">
+              <Upload className="h-5 w-5 text-[#16a34a]" />
             </div>
-          ) : extractedFileName ? (
-            <div className="flex items-center gap-3 pointer-events-none">
-              <div className="flex-shrink-0 w-10 h-10 bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg flex items-center justify-center">
-                <CheckCircle className="h-5 w-5 text-[#16a34a]" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-[#0a0a0a] truncate">{extractedFileName}</p>
-                <p className="text-xs text-[#6b7280]">Fields auto-filled below. Unsure AI fields are highlighted in yellow.</p>
-              </div>
-              <span className="text-xs text-[#16a34a] font-medium">Click to replace</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-[#0a0a0a]">
+                {queuedFiles.length === 0
+                  ? "Drop documents here, or click to browse"
+                  : `${queuedFiles.length} document${queuedFiles.length === 1 ? "" : "s"} ready — add more or extract below`}
+              </p>
+              <p className="text-xs text-[#6b7280]">
+                PDF or Image (Max 20MB each, up to {MAX_FILES} files)
+              </p>
             </div>
-          ) : (
-            <div className="flex items-center gap-3 pointer-events-none">
-              <div className="flex-shrink-0 w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-[#e5e7eb]">
-                <Upload className="h-5 w-5 text-[#16a34a]" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-[#0a0a0a]">Upload a claim document</p>
-                <p className="text-xs text-[#6b7280]">PDF or Image (Max 20MB)</p>
-              </div>
-              <FileText className="h-5 w-5 text-[#d1d5db] hidden sm:block" />
-            </div>
-          )}
+            <FileText className="h-5 w-5 text-[#d1d5db] hidden sm:block" />
+          </div>
         </div>
+
+        {/* Queue list */}
+        {queuedFiles.length > 0 && (
+          <div className="mt-3 border border-[#e5e7eb] rounded-xl divide-y divide-[#f3f4f6] bg-white overflow-hidden">
+            {queuedFiles.map((f, i) => (
+              <div key={`${f.name}-${f.size}-${i}`} className="flex items-center gap-3 px-4 py-2.5">
+                <FileText className="h-4 w-4 text-[#16a34a] flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-[#0a0a0a] truncate">{f.name}</p>
+                  <p className="text-xs text-[#9ca3af]">{formatBytes(f.size)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeQueuedFile(i)}
+                  disabled={extracting}
+                  className="p-1.5 text-[#9ca3af] hover:text-red-500 transition-colors disabled:opacity-50"
+                  aria-label={`Remove ${f.name}`}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Extract / clear actions */}
+        {queuedFiles.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              onClick={handleExtractAll}
+              loading={extracting}
+              className="gap-2"
+            >
+              <Sparkles className="h-4 w-4" />
+              {extracting
+                ? "Extracting…"
+                : `Extract & Auto-Fill (${queuedFiles.length})`}
+            </Button>
+            <button
+              type="button"
+              onClick={clearQueue}
+              disabled={extracting}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-[#6b7280] hover:text-red-500 border border-[#e5e7eb] hover:border-red-200 rounded-lg transition-colors disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              Clear queue
+            </button>
+          </div>
+        )}
+
+        {/* Success banner once extraction has applied */}
+        {extractedFileNames.length > 0 && !extracting && (
+          <div className="mt-3 flex items-start gap-3 bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg p-3">
+            <CheckCircle className="h-5 w-5 text-[#16a34a] flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0 text-xs text-[#15803d]">
+              <p className="font-medium">
+                Auto-filled from {extractedFileNames.length} document{extractedFileNames.length === 1 ? "" : "s"}.
+                Unsure AI fields are highlighted in yellow — please verify before submitting.
+              </p>
+              <p className="mt-1 truncate text-[#16a34a]">{extractedFileNames.join(" · ")}</p>
+            </div>
+          </div>
+        )}
 
         {extractError && (
           <div className="mt-3 bg-red-50 text-red-600 text-sm rounded-lg p-3 border border-red-200">
@@ -638,7 +795,7 @@ export default function ClaimForm() {
         </h3>
         <p className="text-xs text-[#6b7280] mb-4 mt-2">
           If you obtained a pre-authorization for this service, paste the number below.
-          We&apos;ll verify the patient, validity window, and approved procedure codes before submission.
+          We&apos;ll verify the patient, validity window, and approved procedure codes — but only when the payer is in our network. Out-of-network payers can&apos;t be verified, so the field is informational in that case.
         </p>
         <div className="space-y-3">
           <Input
@@ -690,6 +847,98 @@ export default function ClaimForm() {
               </div>
             </div>
           )}
+        </div>
+      </section>
+
+      {/* Clinical Context — feeds the fraud detector */}
+      <section>
+        <h3 className="font-display text-base sm:text-lg font-bold text-[#0a0a0a] mb-1 pb-2 border-b border-[#e5e7eb]">
+          Clinical Context
+        </h3>
+        <p className="text-xs text-[#6b7280] mb-4 mt-2">
+          Optional but recommended. These signals feed our fraud detection model — the more we know
+          about the visit, the more accurate the risk score. Leaving 5+ blank disables fraud scoring
+          for this claim.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {/* Patient demographics */}
+          <Input
+            id="patient_age"
+            label="Patient Age"
+            type="number"
+            min={0}
+            max={130}
+            placeholder="e.g. 45"
+            value={form.patient_age ?? ""}
+            onChange={(e) => updateField("patient_age", e.target.value === "" ? "" : Number(e.target.value))}
+          />
+          <div className="space-y-1.5">
+            <label htmlFor="patient_gender" className="block text-sm font-medium text-gray-700">Patient Gender</label>
+            <select
+              id="patient_gender"
+              value={form.patient_gender || ""}
+              onChange={(e) => updateField("patient_gender", e.target.value)}
+              className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a]"
+            >
+              <option value="">— Select —</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+            </select>
+          </div>
+          <Input
+            id="patient_state"
+            label="Patient State / Region"
+            placeholder="e.g. Amman"
+            value={form.patient_state || ""}
+            onChange={(e) => updateField("patient_state", e.target.value)}
+          />
+
+          {/* Visit context */}
+          <div className="space-y-1.5">
+            <label htmlFor="visit_type" className="block text-sm font-medium text-gray-700">Visit Type</label>
+            <select
+              id="visit_type"
+              value={form.visit_type || ""}
+              onChange={(e) => updateField("visit_type", e.target.value)}
+              className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a]"
+            >
+              <option value="">— Select —</option>
+              {VISIT_TYPES.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          {(form.visit_type === "Inpatient" || form.visit_type === "Day Surgery") && (
+            <Input
+              id="length_of_stay"
+              label="Length of Stay (days)"
+              type="number"
+              min={0}
+              max={365}
+              placeholder="e.g. 3"
+              value={form.length_of_stay ?? ""}
+              onChange={(e) => updateField("length_of_stay", e.target.value === "" ? "" : Number(e.target.value))}
+            />
+          )}
+          <div className="space-y-1.5">
+            <label htmlFor="insurance_type" className="block text-sm font-medium text-gray-700">Insurance Plan Type</label>
+            <select
+              id="insurance_type"
+              value={form.insurance_type || ""}
+              onChange={(e) => updateField("insurance_type", e.target.value)}
+              className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a]"
+            >
+              <option value="">— Select —</option>
+              {INSURANCE_TYPES.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+
+          {/* Provider context */}
+          <Input
+            id="provider_specialty"
+            label="Provider Specialty"
+            placeholder="e.g. Cardiology"
+            value={form.provider_specialty || ""}
+            onChange={(e) => updateField("provider_specialty", e.target.value)}
+          />
         </div>
       </section>
 

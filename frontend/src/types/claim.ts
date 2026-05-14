@@ -12,6 +12,18 @@ export interface ClaimFormData {
   notes: string;
   confidence_scores?: Record<string, number>;
   clinic_id?: string;
+
+  // ── Clinical Context — feeds the Layer-1 XGBoost fraud detector.
+  // All optional, but the more we supply the higher the detector's
+  // signal/noise ratio. If 5+ of these are missing for a claim, the
+  // fraud model reports `insufficient_data` and skips scoring.
+  patient_age?: number;
+  patient_gender?: "Male" | "Female" | "";
+  patient_state?: string;
+  visit_type?: "Inpatient" | "Outpatient" | "Emergency" | "Day Surgery" | "";
+  length_of_stay?: number;
+  insurance_type?: string;
+  provider_specialty?: string;
 }
 
 export interface ScrubResult {

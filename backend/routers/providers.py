@@ -6,13 +6,10 @@ admin can only act on their own organisation.
 """
 
 import logging
-import secrets
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from core.database import supabase
 from core.security import get_current_user
@@ -23,11 +20,6 @@ router = APIRouter(prefix="/api/providers", tags=["providers"])
 
 
 # --- Pydantic models -------------------------------------------------------
-class InviteRequest(BaseModel):
-    email: EmailStr
-    expires_in_days: int = 14
-
-
 class JoinDecision(BaseModel):
     decision: str  # 'approve' | 'reject'
 
@@ -191,46 +183,3 @@ async def decide_join_request(
     return {"status": new_status}
 
 
-# --- Invitations -----------------------------------------------------------
-@router.post("/invitations")
-async def create_invitation(payload: InviteRequest, current_user=Depends(get_current_user)):
-    """Creates an email invitation token. Email delivery is the frontend's job;
-    we just return the shareable link payload."""
-    profile = _require_provider_admin(current_user.id)
-    org_id = profile["provider_org_id"]
-
-    token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(days=max(1, payload.expires_in_days))
-
-    insert_res = supabase.table("doctor_invitations").insert({
-        "provider_org_id": org_id,
-        "invited_email": payload.email.lower(),
-        "token": token,
-        "invited_by": current_user.id,
-        "expires_at": expires_at.isoformat(),
-    }).execute()
-    if not insert_res.data:
-        raise HTTPException(status_code=500, detail="Failed to create invitation.")
-    return insert_res.data[0]
-
-
-@router.get("/invitations")
-async def list_invitations(current_user=Depends(get_current_user)):
-    profile = _require_provider_admin(current_user.id)
-    res = (
-        supabase.table("doctor_invitations")
-        .select("*")
-        .eq("provider_org_id", profile["provider_org_id"])
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return res.data or []
-
-
-@router.delete("/invitations/{invitation_id}")
-async def revoke_invitation(invitation_id: str, current_user=Depends(get_current_user)):
-    profile = _require_provider_admin(current_user.id)
-    supabase.table("doctor_invitations").update({"status": "revoked"}).eq(
-        "id", invitation_id
-    ).eq("provider_org_id", profile["provider_org_id"]).execute()
-    return {"status": "revoked"}

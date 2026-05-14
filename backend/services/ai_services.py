@@ -192,12 +192,17 @@ def get_vision_llm():
         temperature=0.1
     )
 
-def get_llm():
-    return ChatGroq(
-        api_key=Config.GROQ_API_KEY, 
-        model_name=Config.LLM_MODEL, 
-        temperature=0.1
-    )
+def get_llm(json_mode: bool = False):
+    kwargs = {
+        "api_key": Config.GROQ_API_KEY,
+        "model_name": Config.LLM_MODEL,
+        "temperature": 0.1,
+    }
+    if json_mode:
+        # Groq honours OpenAI-style response_format. Guarantees the model
+        # returns a JSON-parseable string.
+        kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
+    return ChatGroq(**kwargs)
 
 def get_embeddings():
     # Direct HTTP wrapper around Gemini's `embedContent` endpoint.
@@ -210,17 +215,58 @@ def extract_json_from_text(text: str) -> str:
     """Extracts JSON from an LLM response, stripping out markdown formatting."""
     if not text:
         return "{}"
-        
+
     # Clean up standard markdown JSON code blocks
     text = text.replace('```json', '').replace('```', '').strip()
-    
+
     start_idx = text.find('{')
     end_idx = text.rfind('}')
-    
+
     if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
         return text[start_idx:end_idx + 1]
-        
+
     return "{}" # Return empty JSON object if nothing found
+
+
+def _repair_json_string(s: str) -> str:
+    """Best-effort repair of common LLM JSON mistakes:
+      - trailing commas before `}` / `]`
+      - // line comments and /* block comments
+      - smart quotes
+      - unquoted object keys (e.g. `{ field: "x" }` → `{ "field": "x" }`)
+
+    Conservative: only intended for fallback when strict json.loads fails."""
+    import re as _re
+
+    # Strip JS-style comments (LLMs sometimes annotate fields).
+    s = _re.sub(r"//[^\n]*", "", s)
+    s = _re.sub(r"/\*.*?\*/", "", s, flags=_re.DOTALL)
+
+    # Normalise smart quotes.
+    s = (s.replace("“", '"').replace("”", '"')
+           .replace("‘", "'").replace("’", "'"))
+
+    # Quote unquoted keys: matches `{` or `,` followed by an identifier then `:`.
+    s = _re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', s)
+
+    # Drop trailing commas before } or ].
+    s = _re.sub(r",(\s*[}\]])", r"\1", s)
+
+    return s
+
+
+def parse_llm_json(text: str) -> dict:
+    """Robust LLM-output → dict. Tries strict parse first, then a repair pass."""
+    raw = extract_json_from_text(text)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as first_err:
+        repaired = _repair_json_string(raw)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            # Re-raise the original (more informative) error.
+            raise first_err
 
 async def extract_text_from_file(base64_data: str, media_type: str) -> str:
     """Extracts text from PDF, Images, or Word documents with high-fidelity formatting."""
@@ -740,6 +786,14 @@ class ClaimExtractionResult(_BaseModel):
     additional_procedures: FieldStringList = _Field(description="Additional CPT/HCPCS codes")
     billed_amount: FieldFloat
     additional_notes: FieldString
+    # Fraud-detector signals — extracted only if visibly present in the document.
+    patient_age: FieldString = _Field(description="Patient age as a whole number — '' if not stated.")
+    patient_gender: FieldString = _Field(description="'Male' or 'Female' — '' if not stated.")
+    patient_state: FieldString = _Field(description="Patient state/governorate/region (e.g. 'Amman'). '' if not stated.")
+    visit_type: FieldString = _Field(description="One of: Inpatient, Outpatient, Emergency, Day Surgery — '' if not stated.")
+    length_of_stay: FieldString = _Field(description="Length of stay in days (whole number). '' if not stated or outpatient.")
+    insurance_type: FieldString = _Field(description="Plan type referenced on the document (e.g. 'Comprehensive', 'Basic'). '' if not stated.")
+    provider_specialty: FieldString = _Field(description="Treating physician specialty (e.g. 'Cardiology'). '' if not stated.")
 
 
 _claim_parser = PydanticOutputParser(pydantic_object=ClaimExtractionResult)
@@ -749,9 +803,11 @@ CLAIM_EXTRACTION_PROMPT = """You are an expert medical claims parser.
 Extract the data directly from the provided image.
 
 CRITICAL RULES:
-1. NO HALLUCINATIONS: If a field is NOT clearly present in the image, set its value to "" (or 0) and its confidence to 0. Do not invent notes or IDs.
+1. NO HALLUCINATIONS: If a field is NOT clearly present in the image, set its value to "" (or 0) and its confidence to 0. Do not invent notes, IDs, demographics, or clinical context.
 2. CONFIDENCE SCORES: Rate your confidence from 0 to 100 based on how clearly you can read the text.
 3. Normalize dates to YYYY-MM-DD.
+4. For the fraud-signal fields (patient_age, patient_gender, patient_state, visit_type, length_of_stay, insurance_type, provider_specialty): extract ONLY when explicitly stated in the document. Do not guess from context. Empty + confidence 0 is preferable to a guess.
+5. visit_type must be exactly one of: Inpatient, Outpatient, Emergency, Day Surgery. Map common synonyms (e.g. "ambulatory" → Outpatient, "ER" → Emergency) but leave blank if unclear.
 
 {format_instructions}
 """
@@ -770,7 +826,9 @@ You are NOT a medical-necessity gatekeeper — necessity was decided at pre-auth
 
 If the auth status is `missing`, `expired`, `wrong_patient`, or `code_mismatch`, you MUST raise an `error`-severity issue on the `pre_auth_number` field with severity `error` and a clear message explaining the problem. This is non-negotiable — most payers deny claims with broken authorization linkage.
 
-If `not_applicable`, treat this as a self-pay or unauthorised-service claim and note in `recommendations` that the provider should confirm whether an auth was required.
+If the auth block says **NOT VERIFIABLE** (out-of-network payer), do NOT raise any issue on `pre_auth_number`. We have no way to verify it against an external payer's system, so accept the supplied number as informational metadata and move on.
+
+If **NOT PROVIDED** (no number supplied at all), do not raise an error either — instead note in `recommendations` that the provider should confirm whether an auth was required for these procedures.
 
 ## Coding review checklist (apply in order)
 1. **CPT ↔ ICD-10 alignment** — Does at least one billed procedure code have a clinically supported diagnosis code on the claim? Flag procedures with no supporting diagnosis.
@@ -826,27 +884,60 @@ Use EXACTLY this structure:
 """
 
 
-async def extract_claim_from_document(file_base64: str, media_type: str) -> dict:
-    """Single-step claim extraction: passes image to Gemini, returns strict JSON."""
+async def extract_claim_from_documents(documents: list[dict]) -> dict:
+    """Multi-document claim extraction. Each entry in `documents` must be
+    {"fileBase64": str, "mediaType": str, "fileName": str}. All images are sent
+    in one Gemini call so the model can cross-reference fields across them
+    (e.g. patient name from an insurance card + diagnosis from a clinical
+    note) and return a single consolidated record."""
+    if not documents:
+        raise ValueError("No documents provided.")
+
     vision_llm = get_vision_llm()
     prompt_text = CLAIM_EXTRACTION_PROMPT.format(
         format_instructions=_claim_parser.get_format_instructions()
     )
-    image_data_url = f"data:{media_type};base64,{file_base64}"
-    messages = [
-        HumanMessage(content=[
-            {"type": "text", "text": prompt_text},
-            {"type": "image_url", "image_url": {"url": image_data_url}},
-        ])
-    ]
-    logger.info(f"Calling Vision Model ({Config.OCR_MODEL}) for claim extraction...")
+
+    content: list[dict] = [{"type": "text", "text": prompt_text}]
+    if len(documents) > 1:
+        content.append({
+            "type": "text",
+            "text": (
+                f"You are looking at {len(documents)} related documents for the SAME claim "
+                "(e.g. claim form, insurance card, clinical note, lab report). "
+                "Cross-reference fields across them and pick the single most reliable value for each field. "
+                "Confidence should reflect agreement across documents — conflicting values lower confidence."
+            ),
+        })
+    for d in documents:
+        file_name = d.get("fileName") or "document"
+        media_type = d["mediaType"]
+        file_b64 = d["fileBase64"]
+        content.append({"type": "text", "text": f"--- Document: {file_name} ---"})
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{file_b64}"},
+        })
+
+    messages = [HumanMessage(content=content)]
+    logger.info(
+        f"Calling Vision Model ({Config.OCR_MODEL}) for claim extraction "
+        f"with {len(documents)} document(s)..."
+    )
     try:
         response = await vision_llm.ainvoke(messages)
         result = _claim_parser.parse(response.content)
         return result.model_dump()
     except Exception as e:
-        logger.error(f"Single-step claim extraction failed: {str(e)}")
+        logger.error(f"Multi-doc claim extraction failed: {str(e)}")
         raise ValueError("The AI failed to format the document properly. Please re-upload.") from e
+
+
+async def extract_claim_from_document(file_base64: str, media_type: str) -> dict:
+    """Backward-compat shim around extract_claim_from_documents for single-file callers."""
+    return await extract_claim_from_documents([
+        {"fileBase64": file_base64, "mediaType": media_type, "fileName": "document"}
+    ])
 
 
 def _format_auth_check(auth_check: dict | None) -> str:
@@ -855,13 +946,20 @@ def _format_auth_check(auth_check: dict | None) -> str:
         return "No authorization check was performed."
     status = (auth_check.get("status") or "").lower()
     detail = auth_check.get("detail") or ""
+    # `not_applicable` covers two distinct cases — disambiguate via the detail
+    # so the prompt's downstream rules trigger correctly.
+    if status == "not_applicable":
+        if "out-of-network" in detail.lower():
+            head = "NOT VERIFIABLE — The payer is out-of-network. Treat the supplied authorization number as opaque metadata; do NOT flag it."
+        else:
+            head = "NOT PROVIDED — No pre-authorisation number was supplied with this claim."
+        return f"{head}\n{detail}".strip()
     labels = {
         "ok": "VERIFIED — A valid pre-authorisation covers this claim.",
         "missing": "MISSING — The provider referenced a pre-authorisation number, but no matching authorization exists for this payer.",
         "expired": "EXPIRED — The referenced authorization is past its validity window.",
         "wrong_patient": "WRONG PATIENT — The authorization was issued for a different patient.",
         "code_mismatch": "CODE MISMATCH — The billed procedure codes are not within the authorised scope.",
-        "not_applicable": "NOT PROVIDED — No pre-authorisation number was supplied with this claim.",
     }
     head = labels.get(status, f"STATUS: {status}")
     return f"{head}\n{detail}".strip()
@@ -869,7 +967,7 @@ def _format_auth_check(auth_check: dict | None) -> str:
 
 async def scrub_claim(claim_data: dict, registered_payer_id: str = None) -> dict:
     """Scrubs a structured claim against payer policy rules (RAG) and returns issues + corrections."""
-    llm = get_llm()
+    llm = get_llm(json_mode=True)
 
     # Auth check verdict is consumed by the prompt directly — strip it from the
     # JSON payload sent to the LLM so it doesn't confuse the coding review.
@@ -916,13 +1014,12 @@ async def scrub_claim(claim_data: dict, registered_payer_id: str = None) -> dict
         HumanMessage(content=f"Analyze and scrub the following medical claim:\n\n{claim_json_str}"),
     ]
     response = await llm.ainvoke(messages)
-    json_str = extract_json_from_text(response.content)
     try:
-        result = json.loads(json_str)
+        result = parse_llm_json(response.content)
         result["retrieved_sources"] = retrieved_chunks
         return result
     except Exception as e:
-        logger.error(f"Failed to parse scrub JSON: {str(e)}")
+        logger.error(f"Failed to parse scrub JSON: {str(e)} | raw: {response.content[:500]!r}")
         raise ValueError("AI returned invalid JSON during scrubbing.") from e
 
 

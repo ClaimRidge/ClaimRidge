@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -10,13 +10,15 @@ import {
   ArrowLeft,
   CheckCircle,
   Plus,
-  Mail,
   Clock,
-  XCircle,
-  Send,
+  ChevronDown,
+  ChevronRight,
+  Mail,
+  Stethoscope,
+  IdCard,
+  MessageSquare,
+  Calendar,
 } from "lucide-react";
-import Button from "@/components/ui/Button";
-import Input from "@/components/ui/Input";
 
 interface DoctorProfile {
   id: string;
@@ -35,38 +37,21 @@ interface JoinRequest {
   doctor: DoctorProfile | null;
 }
 
-interface Invitation {
-  id: string;
-  invited_email: string;
-  token: string;
-  status: "pending" | "accepted" | "revoked" | "expired";
-  expires_at: string;
-  created_at: string;
-}
-
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "";
 
 export default function StaffManagementPage() {
   const supabase = createClient();
   const [authHeader, setAuthHeader] = useState<string>("");
   const [orgCode, setOrgCode] = useState("");
-  const [providerOrgId, setProviderOrgId] = useState<string | null>(null);
   const [doctors, setDoctors] = useState<DoctorProfile[]>([]);
   const [requests, setRequests] = useState<JoinRequest[]>([]);
-  const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
-
-  // Invite form state
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteSending, setInviteSending] = useState(false);
-  const [inviteError, setInviteError] = useState("");
-  const [lastInviteLink, setLastInviteLink] = useState<string | null>(null);
-  const [lastInviteLinkCopied, setLastInviteLinkCopied] = useState(false);
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
 
   const authedFetch = useCallback(
     async (path: string, init?: RequestInit) => {
-      const res = await fetch(`${BACKEND}${path}`, {
+      return fetch(`${BACKEND}${path}`, {
         ...init,
         headers: {
           "Content-Type": "application/json",
@@ -74,21 +59,18 @@ export default function StaffManagementPage() {
           ...(init?.headers || {}),
         },
       });
-      return res;
     },
     [authHeader]
   );
 
   const refresh = useCallback(async () => {
     if (!authHeader) return;
-    const [docsRes, reqRes, invRes] = await Promise.all([
+    const [docsRes, reqRes] = await Promise.all([
       authedFetch("/api/providers/doctors"),
       authedFetch("/api/providers/join-requests?status=pending"),
-      authedFetch("/api/providers/invitations"),
     ]);
     if (docsRes.ok) setDoctors(await docsRes.json());
     if (reqRes.ok) setRequests(await reqRes.json());
-    if (invRes.ok) setInvitations(await invRes.json());
   }, [authHeader, authedFetch]);
 
   useEffect(() => {
@@ -98,13 +80,11 @@ export default function StaffManagementPage() {
       const auth = `Bearer ${session.access_token}`;
       setAuthHeader(auth);
 
-      // Pull org info via the backend (single source of truth, respects RLS).
       const orgRes = await fetch(`${BACKEND}/api/providers/me`, {
         headers: { Authorization: auth },
       });
       if (orgRes.ok) {
         const org = await orgRes.json();
-        setProviderOrgId(org.id);
         setOrgCode(org.org_code || "");
       }
     })();
@@ -133,48 +113,12 @@ export default function StaffManagementPage() {
     if (res.ok) setDoctors((prev) => prev.filter((d) => d.id !== doctorId));
   };
 
-  const sendInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setInviteError("");
-    setInviteSending(true);
-    setLastInviteLink(null);
-    try {
-      const res = await authedFetch("/api/providers/invitations", {
-        method: "POST",
-        body: JSON.stringify({ email: inviteEmail, expires_in_days: 14 }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setInviteError(body?.detail || "Could not create invitation.");
-        return;
-      }
-      const inv: Invitation = await res.json();
-      const link = `${window.location.origin}/signup?invite=${inv.token}`;
-      setLastInviteLink(link);
-      setInviteEmail("");
-      await refresh();
-    } finally {
-      setInviteSending(false);
-    }
-  };
-
-  const revokeInvite = async (id: string) => {
-    const res = await authedFetch(`/api/providers/invitations/${id}`, { method: "DELETE" });
-    if (res.ok) await refresh();
-  };
-
   const copyOrgLink = () => {
     if (!orgCode) return;
     const link = `${window.location.origin}/signup?role=doctor&org=${orgCode}`;
     navigator.clipboard.writeText(link);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const copyInviteLink = (link: string) => {
-    navigator.clipboard.writeText(link);
-    setLastInviteLinkCopied(true);
-    setTimeout(() => setLastInviteLinkCopied(false), 2000);
   };
 
   return (
@@ -191,7 +135,7 @@ export default function StaffManagementPage() {
         </div>
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0a0a0a]">Manage Medical Staff</h1>
-          <p className="text-[#9ca3af] text-sm">Invite doctors, review join requests, and manage your roster.</p>
+          <p className="text-[#9ca3af] text-sm">Share your code, approve join requests, manage your roster.</p>
         </div>
       </div>
 
@@ -228,42 +172,6 @@ export default function StaffManagementPage() {
         </div>
       </div>
 
-      {/* Email invitation panel */}
-      <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm mb-8">
-        <h3 className="font-bold text-[#0a0a0a] flex items-center gap-2 mb-1">
-          <Mail className="h-4 w-4 text-[#16a34a]" /> Invite a Doctor by Email
-        </h3>
-        <p className="text-sm text-[#6b7280] mb-4">
-          Email invitations auto-link the doctor on signup (no approval needed) — only send them to people you&apos;ve already vetted.
-        </p>
-        <form onSubmit={sendInvite} className="flex flex-col sm:flex-row gap-3">
-          <Input
-            id="inviteEmail"
-            type="email"
-            placeholder="doctor@example.com"
-            value={inviteEmail}
-            onChange={(e) => setInviteEmail(e.target.value)}
-            required
-            className="flex-1"
-          />
-          <Button type="submit" loading={inviteSending} className="whitespace-nowrap">
-            <Send className="h-4 w-4 mr-2" /> Send Invitation
-          </Button>
-        </form>
-        {inviteError && <p className="text-sm text-red-600 mt-2">{inviteError}</p>}
-        {lastInviteLink && (
-          <div className="mt-4 p-3 bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg flex items-center justify-between gap-3">
-            <code className="text-xs text-[#15803d] truncate flex-1">{lastInviteLink}</code>
-            <button
-              onClick={() => copyInviteLink(lastInviteLink)}
-              className="text-xs font-bold text-[#16a34a] hover:underline whitespace-nowrap"
-            >
-              {lastInviteLinkCopied ? "Copied!" : "Copy link"}
-            </button>
-          </div>
-        )}
-      </div>
-
       {/* Pending join requests */}
       <Section
         title="Pending Join Requests"
@@ -275,6 +183,7 @@ export default function StaffManagementPage() {
           <table className="w-full">
             <thead>
               <tr className="bg-[#f9fafb] text-left border-b border-[#f3f4f6]">
+                <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase w-8"></th>
                 <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase">Doctor</th>
                 <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase">Specialty</th>
                 <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase">Email</th>
@@ -283,88 +192,78 @@ export default function StaffManagementPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#f3f4f6]">
-              {requests.map((r) => (
-                <tr key={r.id} className="hover:bg-[#f9fafb]">
-                  <td className="px-6 py-4 text-sm font-bold text-[#0a0a0a]">{r.doctor?.full_name || "(unknown)"}</td>
-                  <td className="px-6 py-4 text-sm text-[#6b7280]">{r.doctor?.doctor_specialty || "—"}</td>
-                  <td className="px-6 py-4 text-sm text-[#6b7280]">{r.doctor?.contact_email || "—"}</td>
-                  <td className="px-6 py-4 text-sm text-[#6b7280]">{new Date(r.created_at).toLocaleDateString()}</td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => decideRequest(r.id, "approve")}
-                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#f0fdf4] text-[#16a34a] hover:bg-[#16a34a] hover:text-white border border-[#bbf7d0] transition-all"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => decideRequest(r.id, "reject")}
-                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 transition-all"
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Section>
-
-      {/* Active invitations */}
-      <Section
-        title="Outstanding Invitations"
-        icon={<Mail className="h-4 w-4 text-[#6b7280]" />}
-        count={invitations.filter((i) => i.status === "pending").length}
-        emptyText="No outstanding invitations."
-      >
-        {invitations.length > 0 && (
-          <table className="w-full">
-            <thead>
-              <tr className="bg-[#f9fafb] text-left border-b border-[#f3f4f6]">
-                <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase">Email</th>
-                <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase">Status</th>
-                <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase">Expires</th>
-                <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f3f4f6]">
-              {invitations.map((inv) => (
-                <tr key={inv.id} className="hover:bg-[#f9fafb]">
-                  <td className="px-6 py-4 text-sm font-bold text-[#0a0a0a]">{inv.invited_email}</td>
-                  <td className="px-6 py-4 text-sm">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                      inv.status === "pending" ? "bg-amber-50 text-amber-700" :
-                      inv.status === "accepted" ? "bg-green-50 text-green-700" :
-                      "bg-gray-100 text-gray-500"
-                    }`}>
-                      {inv.status}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-[#6b7280]">{new Date(inv.expires_at).toLocaleDateString()}</td>
-                  <td className="px-6 py-4 text-right">
-                    {inv.status === "pending" ? (
-                      <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() => copyInviteLink(`${window.location.origin}/signup?invite=${inv.token}`)}
-                          className="text-xs font-bold text-[#16a34a] hover:underline"
-                        >
-                          Copy link
-                        </button>
-                        <button
-                          onClick={() => revokeInvite(inv.id)}
-                          className="text-xs font-bold text-red-500 hover:underline flex items-center gap-1"
-                        >
-                          <XCircle className="h-3 w-3" /> Revoke
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-[#9ca3af]">—</span>
+              {requests.map((r) => {
+                const isOpen = expandedRequestId === r.id;
+                return (
+                  <Fragment key={r.id}>
+                    <tr
+                      className={`cursor-pointer transition-colors ${isOpen ? "bg-[#f9fafb]" : "hover:bg-[#f9fafb]"}`}
+                      onClick={() => setExpandedRequestId(isOpen ? null : r.id)}
+                    >
+                      <td className="px-6 py-4 text-[#9ca3af]">
+                        {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </td>
+                      <td className="px-6 py-4 text-sm font-bold text-[#0a0a0a]">
+                        <div className="flex items-center gap-2">
+                          {r.doctor?.full_name || "(unknown)"}
+                          {r.message && (
+                            <MessageSquare className="h-3 w-3 text-[#16a34a]" aria-label="Includes a message" />
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-[#6b7280]">{r.doctor?.doctor_specialty || "—"}</td>
+                      <td className="px-6 py-4 text-sm text-[#6b7280]">{r.doctor?.contact_email || "—"}</td>
+                      <td className="px-6 py-4 text-sm text-[#6b7280]">{new Date(r.created_at).toLocaleDateString()}</td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => decideRequest(r.id, "approve")}
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#f0fdf4] text-[#16a34a] hover:bg-[#16a34a] hover:text-white border border-[#bbf7d0] transition-all"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => decideRequest(r.id, "reject")}
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 transition-all"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="bg-[#fafbfc]">
+                        <td colSpan={6} className="px-6 py-5">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+                            <DetailField icon={Users} label="Full Name" value={r.doctor?.full_name} />
+                            <DetailField icon={Stethoscope} label="Specialty" value={r.doctor?.doctor_specialty} />
+                            <DetailField icon={Mail} label="Email" value={r.doctor?.contact_email} mono />
+                            <DetailField icon={IdCard} label="Medical License" value={r.doctor?.doctor_license_number} mono />
+                            <DetailField icon={Calendar} label="Requested On" value={new Date(r.created_at).toLocaleString()} />
+                          </div>
+                          <div className="mt-5 pt-5 border-t border-[#e5e7eb]">
+                            <div className="flex items-start gap-2.5">
+                              <MessageSquare className="h-4 w-4 text-[#16a34a] flex-shrink-0 mt-0.5" />
+                              <div className="flex-1">
+                                <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mb-1.5">
+                                  Message from doctor
+                                </p>
+                                {r.message ? (
+                                  <p className="text-sm text-[#0a0a0a] leading-relaxed bg-white border border-[#e5e7eb] rounded-lg px-4 py-3 whitespace-pre-wrap">
+                                    {r.message}
+                                  </p>
+                                ) : (
+                                  <p className="text-sm text-[#9ca3af] italic">No message attached to this request.</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -375,7 +274,7 @@ export default function StaffManagementPage() {
         title="Approved Doctors"
         icon={<Users className="h-4 w-4 text-[#16a34a]" />}
         count={doctors.length}
-        emptyText="No doctors linked yet. Send an invite or share your code above."
+        emptyText="No doctors linked yet. Share your code above to bring them in."
       >
         {loading ? (
           <div className="animate-pulse p-6">
@@ -442,6 +341,30 @@ function Section({
       ) : (
         children
       )}
+    </div>
+  );
+}
+
+function DetailField({
+  icon: Icon,
+  label,
+  value,
+  mono = false,
+}: {
+  icon: React.ElementType;
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <Icon className="h-4 w-4 text-[#9ca3af] flex-shrink-0 mt-0.5" />
+      <div className="min-w-0">
+        <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mb-0.5">{label}</p>
+        <p className={`text-sm text-[#0a0a0a] ${mono ? "font-mono" : ""} ${value ? "" : "text-[#9ca3af] italic"}`}>
+          {value || "—"}
+        </p>
+      </div>
     </div>
   );
 }

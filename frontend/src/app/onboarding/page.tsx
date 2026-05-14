@@ -46,44 +46,20 @@ export default function OnboardingPage() {
     specialty: "",
     licenseNumber: "",
     orgCode: "",
-    inviteToken: "",
   });
-  const [invitePreview, setInvitePreview] = useState<{ org_name?: string; invited_email?: string } | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const roleParam = params.get("role");
     const orgParam = params.get("org");
-    const inviteParam = params.get("invite");
 
-    if (roleParam === "doctor" || inviteParam) {
+    if (roleParam === "doctor") {
       setRole("doctor");
       setStep(2);
     }
     if (orgParam) {
       setDoctorDetails((prev) => ({ ...prev, orgCode: orgParam.toUpperCase() }));
-    }
-    if (inviteParam) {
-      setDoctorDetails((prev) => ({ ...prev, inviteToken: inviteParam }));
-      (async () => {
-        try {
-          const res = await fetch(
-            `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/invitation-preview/${inviteParam}`
-          );
-          if (res.ok) {
-            const data = await res.json();
-            if (data?.valid) {
-              setInvitePreview({
-                org_name: data.org?.name,
-                invited_email: data.invited_email,
-              });
-            }
-          }
-        } catch {
-          /* preview is non-critical */
-        }
-      })();
     }
   }, []);
 
@@ -285,45 +261,27 @@ export default function OnboardingPage() {
         return;
       }
 
-      // Doctor post-profile affiliation flow: invite token wins over code.
-      if (role === "doctor") {
+      // Doctor post-profile affiliation: submit a join request that the admin must approve.
+      if (role === "doctor" && doctorDetails.orgCode) {
         const { data: { session } } = await supabase.auth.getSession();
         const auth = session?.access_token ? `Bearer ${session.access_token}` : "";
 
-        if (doctorDetails.inviteToken) {
-          setLoadingText("Accepting invitation...");
-          const res = await fetch(
-            `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/accept-invite`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: auth },
-              body: JSON.stringify({ token: doctorDetails.inviteToken }),
-            }
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            setError(body?.detail || "Could not accept invitation. The link may be expired or invalid.");
-            setLoading(false);
-            return;
+        setLoadingText("Requesting access to your hospital...");
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/join-by-code`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: auth },
+            body: JSON.stringify({ org_code: doctorDetails.orgCode.toUpperCase() }),
           }
-        } else if (doctorDetails.orgCode) {
-          setLoadingText("Requesting access to your hospital...");
-          const res = await fetch(
-            `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/doctors/join-by-code`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: auth },
-              body: JSON.stringify({ org_code: doctorDetails.orgCode.toUpperCase() }),
-            }
-          );
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            setError(body?.detail || "Could not submit join request.");
-            setLoading(false);
-            return;
-          }
-          // Join request is pending — doctor lands on the dashboard with a "pending approval" banner.
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setError(body?.detail || "Could not submit join request.");
+          setLoading(false);
+          return;
         }
+        // Join request is pending — doctor lands on the dashboard with a "pending approval" banner.
       }
 
       const target = role === "doctor" ? "/dashboard/doctor" : "/dashboard/provider";
@@ -489,32 +447,16 @@ export default function OnboardingPage() {
                 <Input id="licenseNumber" label="Medical License Number" value={doctorDetails.licenseNumber} onChange={(e) => setDoctorDetails({ ...doctorDetails, licenseNumber: e.target.value })} placeholder="e.g. JMC-12345" />
               </div>
 
-              {invitePreview ? (
-                <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-2xl p-6">
-                  <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
-                    <Building2 className="h-4 w-4 text-[#16a34a]" /> You&apos;ve been invited
-                  </h3>
-                  <p className="text-sm text-[#374151]">
-                    You&apos;ll be linked to <strong>{invitePreview.org_name}</strong> as soon as you finish setup.
-                  </p>
-                  {invitePreview.invited_email && (
-                    <p className="text-xs text-[#6b7280] mt-1">
-                      Invitation sent to <span className="font-mono">{invitePreview.invited_email}</span>
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="bg-[#f9fafb] border border-[#e5e7eb] rounded-2xl p-6">
-                  <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
-                    <Building2 className="h-4 w-4 text-[#16a34a]" /> Hospital Affiliation (Optional)
-                  </h3>
-                  <p className="text-sm text-[#6b7280] mb-4">
-                    Enter your hospital&apos;s organization code. Your request will be sent to the
-                    hospital admin for approval before you gain access to patient records.
-                  </p>
-                  <Input id="orgCode" label="Organization Code" value={doctorDetails.orgCode} onChange={(e) => setDoctorDetails({ ...doctorDetails, orgCode: e.target.value.toUpperCase() })} placeholder="ORG-XXXXXX" className="max-w-xs font-mono tracking-widest" />
-                </div>
-              )}
+              <div className="bg-[#f9fafb] border border-[#e5e7eb] rounded-2xl p-6">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2 mb-2">
+                  <Building2 className="h-4 w-4 text-[#16a34a]" /> Hospital Affiliation (Optional)
+                </h3>
+                <p className="text-sm text-[#6b7280] mb-4">
+                  Enter your hospital&apos;s organization code. Your request will be sent to the
+                  hospital admin for approval before you gain access to patient records.
+                </p>
+                <Input id="orgCode" label="Organization Code" value={doctorDetails.orgCode} onChange={(e) => setDoctorDetails({ ...doctorDetails, orgCode: e.target.value.toUpperCase() })} placeholder="ORG-XXXXXX" className="max-w-xs font-mono tracking-widest" />
+              </div>
 
               <div className="flex gap-4">
                 <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>

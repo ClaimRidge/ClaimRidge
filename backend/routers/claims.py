@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 from core.security import get_current_user
 from core.database import supabase
 
-from services.ai_services import extract_claim_from_document, scrub_claim
+from services.ai_services import extract_claim_from_document, extract_claim_from_documents, scrub_claim
 from services.fraud_service import fraud_detector
 from services.case_engine import generate_fraud_case_file, persist_fraud_case
 from services.authorization import verify_authorization
@@ -18,10 +18,19 @@ from services.authorization import verify_authorization
 logger = logging.getLogger(__name__)
 
 # --- Pydantic Models ---
-class ExtractRequest(BaseModel):
+class ExtractDocument(BaseModel):
     fileBase64: str
     mediaType: str
     fileName: str
+
+class ExtractRequest(BaseModel):
+    # New multi-doc field. Each entry is one uploaded document; the AI fuses
+    # them into a single consolidated record.
+    documents: Optional[List[ExtractDocument]] = None
+    # Legacy single-doc fields kept for any older callers (e.g. /api/intake).
+    fileBase64: Optional[str] = None
+    mediaType: Optional[str] = None
+    fileName: Optional[str] = None
 
 class ClaimFormData(BaseModel):
     patient_name: str
@@ -72,18 +81,29 @@ def is_valid_uuid(val):
 
 @router.post("/extract")
 async def extract_claim(payload: ExtractRequest, current_user = Depends(get_current_user)):
-    logger.info(f"Extract claim request from user {current_user.id}, file: {payload.fileName}")
-    if not payload.fileBase64 or not payload.mediaType:
-        raise HTTPException(status_code=400, detail="Missing file data or media type")
+    # Normalise: accept either a list of documents or a single legacy doc.
+    docs: List[dict] = []
+    if payload.documents:
+        docs = [d.model_dump() for d in payload.documents]
+    elif payload.fileBase64 and payload.mediaType:
+        docs = [{
+            "fileBase64": payload.fileBase64,
+            "mediaType": payload.mediaType,
+            "fileName": payload.fileName or "document",
+        }]
+
+    if not docs:
+        raise HTTPException(status_code=400, detail="No documents provided")
+
+    file_names = [d.get("fileName") or "document" for d in docs]
+    logger.info(f"Extract claim request from user {current_user.id}, files: {file_names}")
 
     try:
-        # This now returns the nested structure: {"patient_name": {"value": "X", "confidence": 90}}
-        extracted = await extract_claim_from_document(payload.fileBase64, payload.mediaType)
-        return {"extracted": extracted, "fileName": payload.fileName}
+        extracted = await extract_claim_from_documents(docs)
+        return {"extracted": extracted, "fileNames": file_names}
     except ValueError as ve:
-        # Catches strict LangChain Pydantic parsing failures
         logger.error(f"AI structured extraction failed: {str(ve)}")
-        raise HTTPException(status_code=422, detail="The AI failed to read the document clearly. Please enter manually.")
+        raise HTTPException(status_code=422, detail="The AI failed to read the document(s) clearly. Please enter manually.")
     except Exception as e:
         logger.error(f"Document extraction failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal processing error: {str(e)}")
@@ -91,7 +111,24 @@ async def extract_claim(payload: ExtractRequest, current_user = Depends(get_curr
 async def _run_fraud_layer(claim_id: str, claim_data: ClaimFormData, resolved_payer_id: Optional[str]) -> dict:
     """Layer-1 (XGBoost) fraud screening for a claim. Persists score + flags on
     the claim row. If the score crosses the threshold AND we have a registered
-    insurer, also generates a structured FraudCaseFile and back-links it."""
+    insurer, also generates a structured FraudCaseFile and back-links it.
+
+    Submission-time features (days_between_service_and_claim, submission_month,
+    submission_day_of_week) are derived here from `date_of_service` / `now()`
+    so the model always sees them — the form doesn't need to ask the provider
+    for these."""
+    today = datetime.date.today()
+    dos = claim_data.date_of_service
+    days_since_service: Optional[int] = None
+    if dos:
+        try:
+            dos_date = datetime.date.fromisoformat(str(dos))
+            days_since_service = max(0, (today - dos_date).days)
+        except (ValueError, TypeError):
+            days_since_service = None
+
+    now = datetime.datetime.now()
+
     signal = {
         "patient_age": claim_data.patient_age,
         "patient_gender": claim_data.patient_gender,
@@ -103,6 +140,10 @@ async def _run_fraud_layer(claim_id: str, claim_data: ClaimFormData, resolved_pa
         "insurance_type": claim_data.insurance_type,
         "provider_specialty": claim_data.provider_specialty,
         "claim_amount": claim_data.billed_amount,
+        # Derived submission-time features for the XGBoost model
+        "days_between_service_and_claim": days_since_service,
+        "submission_month": now.month,
+        "submission_day_of_week": now.weekday(),
     }
     try:
         fraud_result = await fraud_detector.analyze_claim(signal)

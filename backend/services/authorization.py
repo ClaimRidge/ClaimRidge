@@ -129,11 +129,23 @@ def verify_authorization(
     if not pre_auth_number or not pre_auth_number.strip():
         return {"status": "not_applicable", "detail": "No pre-authorisation number was supplied with this claim.", "pre_auth_id": None}
 
+    # Out-of-network: the payer isn't in our database, so we have no
+    # authorisation records to verify against. Treat the number as opaque
+    # metadata — store it on the claim, but don't run verification (and
+    # therefore don't let the scrubber flag it).
+    if not insurer_id:
+        return {
+            "status": "not_applicable",
+            "detail": (
+                f"Payer is out-of-network — authorization {pre_auth_number.strip()} "
+                "cannot be verified against our system. Recorded for reference only."
+            ),
+            "pre_auth_id": None,
+        }
+
     q = supabase.table("pre_auth_requests").select(
         "id, authorization_number, valid_until, approved_procedures, patient_id, insurer_id, status"
-    ).eq("authorization_number", pre_auth_number.strip())
-    if insurer_id:
-        q = q.eq("insurer_id", insurer_id)
+    ).eq("authorization_number", pre_auth_number.strip()).eq("insurer_id", insurer_id)
     res = q.maybe_single().execute()
 
     if not res.data:
