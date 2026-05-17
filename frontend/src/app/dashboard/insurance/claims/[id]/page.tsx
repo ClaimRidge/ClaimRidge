@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import type { InsurerClaim, ClaimFlag } from "@/types/insurer";
+import type { InsurerClaim, ClaimFlag, MedicalNecessity } from "@/types/insurer";
 import AiAnalysisPanel from "@/components/insurer/AiAnalysisPanel";
 import ClaimDecisionActions from "@/components/insurer/ClaimDecisionActions";
 import ClaimStatusPill from "@/components/insurer/ClaimStatusPill";
+import AdjudicationPanel, { type Adjudication } from "@/components/insurer/AdjudicationPanel";
+import MedicalNecessityPanel from "@/components/insurer/MedicalNecessityPanel";
 import Button from "@/components/ui/Button";
 import { formatJod, formatDateJO, maskNationalId, computeAge } from "@/lib/utils/format";
 import {
@@ -18,11 +20,10 @@ import {
   Calendar,
   DollarSign,
   Building2,
-  Stethoscope,
   Hash,
   Clock,
   Paperclip,
-  Brain,
+  BrainCircuit,
 } from "lucide-react";
 
 function DetailRow({ label, value, icon: Icon }: { label: string; value: string; icon: React.ElementType }) {
@@ -37,64 +38,6 @@ function DetailRow({ label, value, icon: Icon }: { label: string; value: string;
   );
 }
 
-function renderFormattedText(text: string) {
-  return text.split('\n').map((line, i) => {
-    if (!line.trim()) return null;
-
-    // Handle Headings
-    if (line.startsWith('### ')) {
-      return (
-        <h3 key={i} className="font-display font-bold text-[#0a0a0a] text-sm uppercase tracking-wide mt-5 mb-2 border-b border-[#bbf7d0] pb-1">
-          {line.replace('### ', '')}
-        </h3>
-      );
-    }
-    if (line.startsWith('## ')) {
-      return (
-        <h2 key={i} className="font-display font-bold text-[#0a0a0a] text-base mt-5 mb-2">
-          {line.replace('## ', '')}
-        </h2>
-      );
-    }
-    
-    // Handle Unordered Lists
-    if (line.trim().startsWith('- ')) {
-      const parts = line.replace('- ', '').split(/(\*\*.*?\*\*)/g);
-      return (
-        <div key={i} className="flex gap-2 mb-2 text-sm text-[#4b5563] leading-relaxed pl-2">
-          <span className="text-[#9ca3af]">•</span>
-          <div>
-            {parts.map((part, index) => {
-              if (part.startsWith('**') && part.endsWith('**')) {
-                return <strong key={index} className="font-semibold text-[#0a0a0a]">{part.slice(2, -2)}</strong>;
-              }
-              return <span key={index}>{part}</span>;
-            })}
-          </div>
-        </div>
-      );
-    }
-
-    // Process inline bold text
-    const parts = line.split(/(\*\*.*?\*\*)/g);
-    
-    return (
-      <p key={i} className="mb-3 text-sm text-[#4b5563] leading-relaxed">
-        {parts.map((part, index) => {
-          if (part.startsWith('**') && part.endsWith('**')) {
-            return (
-              <strong key={index} className="font-semibold text-[#0a0a0a]">
-                {part.slice(2, -2)}
-              </strong>
-            );
-          }
-          return <span key={index}>{part}</span>;
-        })}
-      </p>
-    );
-  });
-}
-
 export default function InsurerClaimDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -104,6 +47,8 @@ export default function InsurerClaimDetailPage() {
   const [error, setError] = useState("");
   const supabase = createClient();
   const [generatingAi, setGeneratingAi] = useState(false);
+  const [adjudication, setAdjudication] = useState<Adjudication | null>(null);
+  const [adjudicating, setAdjudicating] = useState(false);
 
   // Authorization linkage state (lives outside InsurerClaim so we don't need to
   // expand the shared type for this page only).
@@ -114,6 +59,77 @@ export default function InsurerClaimDetailPage() {
     pre_auth_id: string | null;
   }>({ pre_auth_number: null, auth_check_status: null, auth_check_detail: null, pre_auth_id: null });
 
+  // Document Viewer states for claim's linked pre-auth supporting documents
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [activeDoc, setActiveDoc] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"visual" | "text">("visual");
+  const [activeBlobUrl, setActiveBlobUrl] = useState<string | null>(null);
+
+  // Fetch the pre-authorization documents if this claim is linked to one
+  useEffect(() => {
+    if (!authMeta.pre_auth_id) {
+      setDocuments([]);
+      setActiveDoc(null);
+      return;
+    }
+    const fetchPreAuthDocs = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/pre-auth/${authMeta.pre_auth_id}`,
+          { headers: { Authorization: `Bearer ${session.access_token}` } }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.documents) {
+          setDocuments(data.documents);
+          if (data.documents.length > 0) {
+            setActiveDoc(data.documents[0].id);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch pre-auth documents for claim:", err);
+      }
+    };
+    fetchPreAuthDocs();
+  }, [authMeta.pre_auth_id, supabase]);
+
+  // Generate a robust Blob URL for PDF documents to prevent browser data-URI security blocks.
+  useEffect(() => {
+    if (!activeDoc) {
+      setActiveBlobUrl(null);
+      return;
+    }
+    const doc = documents.find((d: any) => d.id === activeDoc);
+    if (!doc || !doc.file_base64 || doc.file_type !== "application/pdf") {
+      setActiveBlobUrl(null);
+      return;
+    }
+
+    try {
+      const byteCharacters = atob(doc.file_base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      setActiveBlobUrl(url);
+
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    } catch (e) {
+      console.error("Failed to generate PDF blob URL:", e);
+      setActiveBlobUrl(null);
+    }
+  }, [activeDoc, documents]);
+
+  // Generates the advisory AI Medical Necessity Review. The backend assembles
+  // the clinical context (code descriptions, notes, linked pre-auth documents,
+  // payer-policy RAG) and returns the structured verdict.
   const handleGenerateRecommendation = async () => {
     if (!claim) return;
     setGeneratingAi(true);
@@ -123,15 +139,41 @@ export default function InsurerClaimDetailPage() {
             method: "POST",
             headers: { "Authorization": `Bearer ${session?.access_token}` }
         });
-        
-        if (!res.ok) throw new Error("Failed to generate analysis");
-        
+
+        if (!res.ok) throw new Error("Failed to generate the clinical review");
+
         const data = await res.json();
-        setClaim({ ...claim, ai_recommendation: data.ai_recommendation });
+        if (data.medical_necessity) {
+            setClaim({ ...claim, medical_necessity: data.medical_necessity as MedicalNecessity });
+        }
     } catch (err) {
         console.error(err);
     } finally {
         setGeneratingAi(false);
+    }
+  };
+
+  // Calls the backend adjudicator. `force` re-runs even if a verdict is cached.
+  const runAdjudication = async (force: boolean) => {
+    setAdjudicating(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/insurer/claims/${params.id}/adjudicate${force ? "?force=true" : ""}`,
+        { method: "POST", headers: { Authorization: `Bearer ${session?.access_token}` } }
+      );
+      if (!res.ok) throw new Error("Adjudication request failed");
+      const data = await res.json();
+      if (data.adjudication && Object.keys(data.adjudication).length > 0) {
+        setAdjudication(data.adjudication as Adjudication);
+        if (data.status) {
+          setClaim((prev) => (prev ? { ...prev, status: data.status } : prev));
+        }
+      }
+    } catch (err) {
+      console.error("Adjudication error:", err);
+    } finally {
+      setAdjudicating(false);
     }
   };
 
@@ -172,6 +214,7 @@ export default function InsurerClaimDetailPage() {
         decision_reason: claimData.notes || null,
         ai_risk_score: claimData.ai_risk_score,
         ai_recommendation: claimData.ai_recommendation || null,
+        medical_necessity: (claimData.medical_necessity as MedicalNecessity) || null,
         created_at: claimData.created_at,
         updated_at: claimData.updated_at || claimData.created_at,
       };
@@ -207,6 +250,19 @@ export default function InsurerClaimDetailPage() {
       }
 
       setFlags(extractedFlags);
+
+      // Automatic adjudication: show the cached verdict if one exists, otherwise
+      // run it now — first open of a routed claim that has not been decided yet.
+      if (claimData.adjudication) {
+        setAdjudication(claimData.adjudication as Adjudication);
+      } else if (
+        claimData.payer_id &&
+        !claimData.adjudicated_at &&
+        ["submitted", "intake_complete", "pending", "under_review"].includes(claimData.status)
+      ) {
+        runAdjudication(false);
+      }
+
       setLoading(false);
     };
 
@@ -309,37 +365,12 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column — Evidence & Details (2/3) */}
         <div className="lg:col-span-2 space-y-6">
-          {/* AI Clinical Recommendation Panel — HIGHEST PRIORITY */}
-          <div className="bg-gradient-to-br from-[#f0fdf4] to-white border border-[#bbf7d0] rounded-xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-display font-bold text-[#0a0a0a] flex items-center gap-2 text-lg">
-                <Stethoscope className="h-5 w-5 text-[#16a34a]" />
-                AI Medical Necessity Review
-              </h2>
-            </div>
-            
-            {claim.ai_recommendation ? (
-              <div className="max-w-none">
-                {renderFormattedText(claim.ai_recommendation)}
-              </div>
-            ) : (
-              <div className="py-4 text-center">
-                <p className="text-sm text-[#6b7280] italic mb-4">
-                  No clinical review generated yet. Analyze the diagnosis and procedure codes against medical guidelines.
-                </p>
-                <Button 
-                  variant="outline"
-                  size="sm"
-                  onClick={handleGenerateRecommendation}
-                  loading={generatingAi}
-                  className="gap-2"
-                >
-                  <Brain className="h-4 w-4" />
-                  Generate Clinical Review
-                </Button>
-              </div>
-            )}
-          </div>
+          {/* AI Medical Necessity Review — advisory clinical input */}
+          <MedicalNecessityPanel
+            review={claim.medical_necessity}
+            loading={generatingAi}
+            onGenerate={handleGenerateRecommendation}
+          />
 
           {/* Claim & Patient Overview */}
           <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm">
@@ -403,15 +434,139 @@ const handleDecision = async (action: "approved" | "rejected" | "needs_info", re
             </div>
           </div>
 
-          {/* Supporting Documents (Mock) — Saved for next time 
-          <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm opacity-60">
-             ...
+          {/* Supporting Documents */}
+          <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm flex flex-col min-h-[500px]">
+            <div className="px-5 py-3 border-b border-[#f3f4f6] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-2 overflow-x-auto py-1">
+                <FileText className="h-4 w-4 text-[#9ca3af]" />
+                <span className="text-sm font-bold text-[#0a0a0a] mr-4 font-sans whitespace-nowrap">Supporting Documents</span>
+                <div className="flex gap-1 flex-wrap">
+                  {documents.map((doc) => (
+                    <button
+                      key={doc.id}
+                      onClick={() => setActiveDoc(doc.id)}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${
+                        activeDoc === doc.id ? "bg-[#0A1628] text-white shadow-md" : "bg-[#f3f4f6] text-[#6b7280] hover:bg-[#e5e7eb]"
+                      }`}
+                    >
+                      {doc.file_name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {documents.length > 0 && (
+                <div className="flex bg-[#f3f4f6] p-1 rounded-lg border border-[#e5e7eb] self-end sm:self-auto">
+                  <button
+                    onClick={() => setViewMode("visual")}
+                    className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${viewMode === "visual" ? "bg-white text-[#0A1628] shadow-sm" : "text-[#9ca3af] hover:text-[#6b7280]"}`}
+                  >
+                    Visual
+                  </button>
+                  <button
+                    onClick={() => setViewMode("text")}
+                    className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${viewMode === "text" ? "bg-white text-[#0A1628] shadow-sm" : "text-[#9ca3af] hover:text-[#6b7280]"}`}
+                  >
+                    Context (Text)
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="p-0 flex-1 overflow-hidden bg-[#fafafa] flex flex-col min-h-[500px] rounded-b-xl justify-center">
+              {documents.length === 0 ? (
+                <div className="p-12 text-center max-w-md mx-auto">
+                  <div className="w-12 h-12 bg-gray-50 border border-gray-100 rounded-xl flex items-center justify-center mb-4 mx-auto shadow-sm">
+                    <FileText className="h-6 w-6 text-gray-400" />
+                  </div>
+                  <h3 className="text-sm font-bold text-[#0a0a0a] mb-1 font-sans">No Supporting Documents</h3>
+                  <p className="text-xs text-gray-500 leading-relaxed font-sans">
+                    {authMeta.pre_auth_number ? (
+                      `This claim is linked to Pre-Authorization ${authMeta.pre_auth_number}, but no clinical evidence documents were attached to the request.`
+                    ) : (
+                      "No prospective pre-authorization is linked to this claim, so no clinical evidence documents are automatically attached."
+                    )}
+                  </p>
+                </div>
+              ) : activeDoc ? (
+                (() => {
+                  const doc = documents.find((d: any) => d.id === activeDoc);
+                  if (!doc) return <div className="p-10 text-center text-gray-500 font-sans text-xs">Document not found.</div>;
+
+                  if (viewMode === "text") {
+                    return (
+                      <div className="p-8 h-full overflow-y-auto bg-white font-sans flex-1">
+                        <div className="max-w-3xl mx-auto">
+                          <h4 className="text-[10px] uppercase tracking-[0.2em] text-[#9ca3af] mb-6 font-black flex items-center gap-2">
+                            <BrainCircuit className="h-3 w-3" /> Extracted Clinical Context
+                          </h4>
+                          <div className="prose prose-sm prose-slate max-w-none flex-1">
+                            <div className="whitespace-pre-wrap text-sm leading-relaxed text-[#374151] font-medium bg-gray-50/50 p-6 rounded-xl border border-gray-100">
+                              {doc.extracted_text || "No text could be extracted from this document."}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (doc.file_base64) {
+                    if (doc.file_type === "application/pdf") {
+                      if (!activeBlobUrl) {
+                        return (
+                          <div className="flex flex-col items-center justify-center h-full p-12 text-center flex-1">
+                            <div className="animate-spin h-8 w-8 border-4 border-[#0A1628] border-t-transparent rounded-full mb-3 mx-auto" />
+                            <p className="text-sm text-gray-500 font-sans">Preparing secure PDF viewer...</p>
+                          </div>
+                        );
+                      }
+                      return (
+                        <iframe
+                          src={`${activeBlobUrl}#toolbar=0&navpanes=0&scrollbar=1`}
+                          className="w-full h-full border-0 flex-1 min-h-[500px]"
+                          title={doc.file_name}
+                        />
+                      );
+                    } else if (doc.file_type.startsWith("image/")) {
+                      return (
+                        <div className="w-full h-full flex items-center justify-center p-4 bg-gray-50 overflow-auto flex-1">
+                          <img
+                            src={`data:${doc.file_type};base64,${doc.file_base64}`}
+                            alt={doc.file_name}
+                            className="max-w-full max-h-[600px] object-contain shadow-xl rounded-lg border border-gray-200"
+                          />
+                        </div>
+                      );
+                    }
+                  }
+
+                  return (
+                    <div className="flex flex-col items-center justify-center h-full p-12 text-center flex-1">
+                      <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                        <FileText className="h-8 w-8 text-gray-400" />
+                      </div>
+                      <h3 className="text-lg font-bold text-gray-900">Preview Unavailable</h3>
+                      <p className="text-sm text-gray-500 mt-2 max-w-sm">
+                        The real document ({doc.file_name}) cannot be previewed.
+                        Only PDF and Image files are supported for inline viewing.
+                      </p>
+                    </div>
+                  );
+                })()
+              ) : null}
+            </div>
           </div>
-          */}
         </div>
 
         {/* Right Column — Decision & Risk Analysis (1/3) */}
         <div className="space-y-6">
+          {/* AI Adjudication verdict — auto-runs on first open */}
+          <AdjudicationPanel
+            adjudication={adjudication}
+            loading={adjudicating}
+            onRerun={() => runAdjudication(true)}
+          />
+
           {/* Decision Actions */}
           <ClaimDecisionActions claim={claim} onDecision={handleDecision} />
 
@@ -457,7 +612,9 @@ function AuthCheckPanel({ authMeta }: {
 
   const config: Record<string, { label: string; bg: string; border: string; text: string; iconBg: string; tone: "ok" | "warn" | "bad" | "info" }> = {
     ok: { label: "Verified", bg: "bg-[#f0fdf4]", border: "border-[#bbf7d0]", text: "text-[#15803d]", iconBg: "bg-[#16a34a]", tone: "ok" },
+    contradiction: { label: "Contradiction", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
     missing: { label: "Missing", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
+    not_approved: { label: "Not Approved", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
     expired: { label: "Expired", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
     wrong_patient: { label: "Wrong Patient", bg: "bg-red-50", border: "border-red-200", text: "text-red-700", iconBg: "bg-red-500", tone: "bad" },
     code_mismatch: { label: "Code Mismatch", bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-800", iconBg: "bg-amber-500", tone: "warn" },
@@ -480,7 +637,7 @@ function AuthCheckPanel({ authMeta }: {
       ) : (
         <p className="text-xs text-[#6b7280] italic mb-2">No authorization number was referenced on this claim.</p>
       )}
-      <p className={`text-xs leading-relaxed ${c.text}`}>{authMeta.auth_check_detail || "—"}</p>
+      <p className={`text-xs leading-relaxed whitespace-pre-line ${c.text}`}>{authMeta.auth_check_detail || "—"}</p>
       {c.tone === "bad" && (
         <p className="text-[10px] text-red-600 mt-3 font-bold uppercase tracking-widest">
           Recommended: deny for missing/invalid authorization.

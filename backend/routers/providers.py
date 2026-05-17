@@ -183,3 +183,89 @@ async def decide_join_request(
     return {"status": new_status}
 
 
+# --- Pre-authorisation governance ------------------------------------------
+def _bucket_pre_auth(row: dict) -> str:
+    """Maps a pre-auth row to a single governance bucket."""
+    if (row.get("routing_status") or "").lower() == "unrouted":
+        return "unrouted"
+    status = (row.get("status") or "").lower()
+    if status in ("approve", "approved"):
+        return "approved"
+    if status in ("escalate", "escalated"):
+        return "escalated"
+    if status in ("deny", "denied", "rejected"):
+        return "denied"
+    return "pending"  # processing / submitted / pending
+
+
+@router.get("/pre-auths")
+async def list_org_pre_auths(current_user=Depends(get_current_user)):
+    """Every pre-auth submitted under the caller's organisation — by the admin
+    and by all affiliated doctors — so a provider admin can govern the lot.
+
+    Returns the full submission list plus a per-doctor stats roll-up. Rows are
+    scoped by `submitter_org`, which the dropoff endpoint stamps with the
+    submitting doctor's resolved clinic."""
+    profile = _require_provider_admin(current_user.id)
+    org_id = profile["provider_org_id"]
+
+    res = (
+        supabase.table("pre_auth_requests")
+        .select("*")
+        .eq("submitter_org", org_id)
+        .order("created_at", desc=True)
+        .limit(500)
+        .execute()
+    )
+    rows = res.data or []
+
+    # Hydrate submitter (doctor/admin) names and insurer names.
+    submitter_ids = list({r["submitted_by"] for r in rows if r.get("submitted_by")})
+    insurer_ids = list({r["insurer_id"] for r in rows if r.get("insurer_id")})
+
+    submitters: dict = {}
+    if submitter_ids:
+        sres = (
+            supabase.table("profiles")
+            .select("id, full_name, account_type, doctor_specialty")
+            .in_("id", submitter_ids)
+            .execute()
+        )
+        submitters = {s["id"]: s for s in (sres.data or [])}
+
+    insurers: dict = {}
+    if insurer_ids:
+        ires = supabase.table("insurers").select("id, name").in_("id", insurer_ids).execute()
+        insurers = {i["id"]: i["name"] for i in (ires.data or [])}
+
+    # Per-doctor roll-up keyed by submitter.
+    doctor_stats: dict = {}
+    for r in rows:
+        sid = r.get("submitted_by")
+        submitter = submitters.get(sid) if sid else None
+        r["submitted_by_name"] = (submitter or {}).get("full_name") or "Unknown"
+        r["submitted_by_role"] = r.get("submitted_role") or (submitter or {}).get("account_type")
+        r["insurer_name"] = (
+            insurers.get(r.get("insurer_id"))
+            if r.get("insurer_id")
+            else r.get("payer_name_raw")
+        )
+
+        key = sid or "unknown"
+        if key not in doctor_stats:
+            doctor_stats[key] = {
+                "doctor_id": sid,
+                "doctor_name": r["submitted_by_name"],
+                "role": r["submitted_by_role"],
+                "specialty": (submitter or {}).get("doctor_specialty"),
+                "total": 0, "approved": 0, "escalated": 0,
+                "denied": 0, "pending": 0, "unrouted": 0,
+            }
+        bucket = _bucket_pre_auth(r)
+        doctor_stats[key]["total"] += 1
+        doctor_stats[key][bucket] += 1
+
+    doctors = sorted(doctor_stats.values(), key=lambda d: d["total"], reverse=True)
+    return {"submissions": rows, "doctors": doctors}
+
+

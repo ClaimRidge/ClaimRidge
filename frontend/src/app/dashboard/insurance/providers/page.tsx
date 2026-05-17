@@ -14,8 +14,7 @@ export default function InsurerProvidersComingSoon() {
         <h1 className="text-3xl font-bold text-[#0a0a0a] mb-3 font-display">
           Module Under Construction
         </h1>
-        <p className="text-[#6b7280] mb-8 leading-relaxed">
-          The <strong>Provider Network Hub</strong> is being populated with regional clinic data. 
+        <p className="text-[#6b7280] mb-8 leading-relaxed"> 
           Soon you will be able to manage your network and credentialing here.
         </p>
         

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from core.database import supabase
 from core.security import get_current_user
+from services import audit
 
 logger = logging.getLogger(__name__)
 
@@ -31,68 +32,121 @@ async def get_pre_auth_queue(current_user = Depends(get_current_user)):
     # 2. Fetch the pre-auths for this insurer, ordered by SLA deadline (most urgent first)
     try:
         queue_res = supabase.table("pre_auth_requests").select(
-            "id, reference_number, provider_name, patient_name, patient_id, claim_amount, status, sla_deadline, ai_decision, created_at"
-        ).eq("insurer_id", insurer_id).order("sla_deadline", desc=False).execute()
+            "id, reference_number, provider_name, patient_name, patient_id, claim_amount, status, sla_deadline, created_at"
+        ).eq("insurer_id", insurer_id).order("created_at", desc=True).execute()
         
         return {"status": "success", "data": queue_res.data}
     except Exception as e:
         logger.error(f"Failed to fetch pre-auth queue for insurer {insurer_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch pre-auth queue.")
 
+
+@router.get("/{id}")
+async def get_pre_auth_detail(id: str, current_user = Depends(get_current_user)):
+    """Returns a single pre-auth request plus its documents, scoped to the
+    caller's insurer. The insurer review page uses this instead of a direct
+    Supabase read: `pre_auth_requests` has no RLS read policy, so a browser
+    query returns zero rows. Running it here with the service role (and a
+    tenant check in code) is consistent with the queue endpoint."""
+    profile_res = supabase.table("profiles").select("insurer_id").eq("id", current_user.id).execute()
+    if not profile_res.data or not profile_res.data[0].get("insurer_id"):
+        raise HTTPException(status_code=403, detail="User is not associated with an insurer.")
+    insurer_id = profile_res.data[0]["insurer_id"]
+
+    # Strictly match insurer_id so a reviewer cannot open another company's request.
+    req_res = (
+        supabase.table("pre_auth_requests")
+        .select("*")
+        .eq("id", id)
+        .eq("insurer_id", insurer_id)
+        .maybe_single()
+        .execute()
+    )
+    if not req_res or not getattr(req_res, "data", None):
+        raise HTTPException(status_code=404, detail="Pre-authorisation request not found.")
+
+    try:
+        docs_res = (
+            supabase.table("pre_auth_documents")
+            .select("*")
+            .eq("pre_auth_id", id)
+            .execute()
+        )
+        documents = docs_res.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch documents for pre-auth {id}: {e}")
+        documents = []
+
+    return {"request": req_res.data, "documents": documents}
+
+
 @router.post("/{id}/review")
 async def review_pre_auth(id: str, payload: ReviewRequest, current_user = Depends(get_current_user)):
+    """Records the insurer reviewer's binding decision on a pre-auth request.
+
+    The decision is binary — approve or deny. Approval activates the
+    authorisation (stamps the validity window + approved-procedure scope onto
+    the request's existing reference); denial revokes any authorisation that
+    was activated earlier. The AI's recommendation is advisory only and never
+    decides the request.
     """
-    Called by the Medical Officer to finalize a decision on a Pre-Auth request.
-    """
-    # 1. Verify user is linked to an insurer
+    # 1. Verify the caller is linked to an insurer
     profile_res = supabase.table("profiles").select("insurer_id").eq("id", current_user.id).execute()
     if not profile_res.data or not profile_res.data[0].get("insurer_id"):
         raise HTTPException(status_code=403, detail="Unauthorized")
-        
+
     insurer_id = profile_res.data[0]["insurer_id"]
 
-    # 2. Update the Pre-Auth status
-    # We strictly match insurer_id to prevent users from approving other companies' requests
+    # 2. Normalise the decision to approve | deny
+    raw = (payload.action or "").strip().lower()
+    if raw in {"approve", "approved"}:
+        decision, new_status = "approve", "approved"
+    elif raw in {"deny", "denied", "reject", "rejected"}:
+        decision, new_status = "deny", "denied"
+    else:
+        raise HTTPException(status_code=400, detail="action must be 'approve' or 'deny'.")
+
+    # 3. Update the request status. We strictly match insurer_id so a reviewer
+    #    cannot decide another company's requests.
     update_res = supabase.table("pre_auth_requests").update({
-        "status": payload.action,
+        "status": new_status,
         "updated_at": datetime.now(timezone.utc).isoformat()
     }).eq("id", id).eq("insurer_id", insurer_id).execute()
 
     if not update_res.data:
         raise HTTPException(status_code=404, detail="Request not found or unauthorized.")
 
-    # 2a. If the reviewer approved it, issue an authorization number. Inverse:
-    # if they reversed an earlier approval, revoke the authorization.
-    issued: dict | None = None
-    action = (payload.action or "").lower()
+    # 4. Approve → activate the authorisation on the request's existing
+    #    reference. Deny → revoke any authorisation activated earlier.
+    authorization: dict | None = None
     try:
-        from services.authorization import issue_authorization, revoke_authorization
-        if action in {"approve", "approved"}:
-            issued = issue_authorization(id)
-        elif action in {"deny", "denied", "rejected", "escalate", "escalated"}:
-            # Approval was overturned — clear the auth to prevent claims from referencing it.
+        from services.authorization import activate_authorization, revoke_authorization
+        if decision == "approve":
+            authorization = activate_authorization(id)
+        else:
             revoke_authorization(id)
     except Exception as e:
         logger.error(f"Authorization handling failed for pre-auth {id}: {e}")
 
-    # 3. Create an Immutable Audit Log
-    try:
-        import hashlib
-        import json
-        payload_hash = hashlib.sha256(json.dumps(payload.dict()).encode()).hexdigest()
-        
-        supabase.table("audit_log").insert({
-            "actor_id": current_user.id,
-            "action": f"manual_pre_auth_{payload.action}",
-            "target_id": id,
-            "target_type": "pre_auth_request",
-            "payload_hash": payload_hash
-        }).execute()
-    except Exception as e:
-        logger.error(f"Failed to create audit log for pre-auth {id}: {e}")
+    # 5. Immutable, hash-chained audit event
+    audit.record_event(
+        action=f"pre_auth_{new_status}",
+        category="decision",
+        actor_id=current_user.id,
+        tenant_type="insurer",
+        tenant_id=insurer_id,
+        target_type="pre_auth",
+        target_id=id,
+        summary=f"Pre-auth manually {new_status} by reviewer",
+        metadata={
+            "decision": decision,
+            "reason": payload.reason,
+            "authorization_activated": bool(authorization),
+        },
+    )
 
     return {
         "status": "success",
-        "message": f"Request {payload.action}d successfully.",
-        "authorization": issued,
+        "message": f"Request {new_status}.",
+        "authorization": authorization,
     }

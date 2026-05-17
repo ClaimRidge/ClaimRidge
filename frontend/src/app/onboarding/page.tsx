@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import Select from "@/components/ui/Select";
 import { Shield, Building2, Stethoscope, ArrowRight, ShieldCheck } from "lucide-react";
 
 type Role = "provider" | "insurance" | "doctor" | null;
@@ -152,6 +153,7 @@ export default function OnboardingPage() {
           role: "admin",
           contact_email: user.email,
           full_name: insuranceDetails.companyNameEn,
+          approved: false,
         }, { onConflict: "id" });
         if (profileError) throw new Error(profileError.message);
 
@@ -172,7 +174,7 @@ export default function OnboardingPage() {
           console.warn("Policy embedding failed, but workspace was created.");
         }
 
-        window.location.assign("/dashboard/insurance");
+        window.location.assign("/waitlist-pending");
         return;
       }
 
@@ -194,6 +196,7 @@ export default function OnboardingPage() {
           full_name: doctorDetails.fullName,
           doctor_specialty: doctorDetails.specialty,
           doctor_license_number: doctorDetails.licenseNumber || null,
+          approved: true,
         };
       } else if (role === "provider") {
         // Pre-check the license number — surfacing this as a friendly error
@@ -240,23 +243,16 @@ export default function OnboardingPage() {
           full_name: providerDetails.legalNameEn,
           contact_email: providerDetails.primaryEmail || user.email,
           provider_org_id: orgRow.id,
+          approved: false,
         };
       }
 
-      const { data: upserted, error: upsertError } = await supabase
+      const { error: upsertError } = await supabase
         .from("profiles")
-        .upsert(profileData, { onConflict: "id" })
-        .select()
-        .maybeSingle();
+        .upsert(profileData, { onConflict: "id" });
+        
       if (upsertError) {
         setError(upsertError.message);
-        setLoading(false);
-        return;
-      }
-      if (!upserted) {
-        setError(
-          "Profile could not be saved. This usually means the profiles table is missing INSERT/UPDATE policies for authenticated users."
-        );
         setLoading(false);
         return;
       }
@@ -284,7 +280,7 @@ export default function OnboardingPage() {
         // Join request is pending — doctor lands on the dashboard with a "pending approval" banner.
       }
 
-      const target = role === "doctor" ? "/dashboard/doctor" : "/dashboard/provider";
+      const target = role === "doctor" ? "/dashboard/doctor" : "/waitlist-pending";
       window.location.assign(target);
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred. Please try again.");
@@ -366,7 +362,17 @@ export default function OnboardingPage() {
               </div>
               <div className="flex gap-4">
                 <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>
-                <Button type="submit" loading={loading} className="flex-1">Finish Setup</Button>
+                <Button 
+                  type="submit" 
+                  loading={loading} 
+                  className={`flex-1 transition-all ${
+                    error 
+                      ? "bg-red-600 hover:bg-red-700 border-red-600 text-white hover:text-white" 
+                      : ""
+                  }`}
+                >
+                  {loading ? loadingText || "Processing..." : error ? "Error - Try Again" : "Finish Setup"}
+                </Button>
               </div>
             </form>
           )}
@@ -380,17 +386,12 @@ export default function OnboardingPage() {
                   <Input id="companyNameAr" label="Company Name (Arabic)" value={insuranceDetails.companyNameAr} onChange={(e) => setInsuranceDetails({ ...insuranceDetails, companyNameAr: e.target.value })} />
                   <div className="space-y-1.5">
                     <label htmlFor="country" className="block text-sm font-medium text-gray-700">Country (MENA)</label>
-                    <select
+                    <Select
                       id="country"
                       value={insuranceDetails.country}
-                      onChange={(e) => setInsuranceDetails({ ...insuranceDetails, country: e.target.value })}
-                      className="w-full h-[46px] px-3.5 py-2.5 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a] transition-all cursor-pointer"
-                      required
-                    >
-                      {["Algeria","Bahrain","Egypt","Iraq","Jordan","Kuwait","Lebanon","Libya","Morocco","Oman","Palestine","Qatar","Saudi Arabia","Syria","Tunisia","United Arab Emirates","Yemen"].map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
+                      onChange={(country) => setInsuranceDetails({ ...insuranceDetails, country })}
+                      options={["Algeria","Bahrain","Egypt","Iraq","Jordan","Kuwait","Lebanon","Libya","Morocco","Oman","Palestine","Qatar","Saudi Arabia","Syria","Tunisia","United Arab Emirates","Yemen"].map((c) => ({ value: c, label: c }))}
+                    />
                   </div>
                 </div>
                 <div className="space-y-4">
@@ -406,9 +407,10 @@ export default function OnboardingPage() {
                 </label>
                 <p className="text-sm text-[#6b7280] mb-4">Upload your policy guidelines as a PDF or Word doc.</p>
                 <input
+                  id="policyFileInput"
                   type="file"
                   accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  required
+                  required={!insuranceDetails.policyFileBase64}
                   disabled={loading}
                   onChange={async (e) => {
                     const file = e.target.files?.[0];
@@ -424,16 +426,38 @@ export default function OnboardingPage() {
                   className="w-full px-4 py-3 bg-white border-2 border-dashed border-[#e5e7eb] hover:border-[#16a34a] rounded-xl text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#f0fdf4] file:text-[#16a34a] hover:file:bg-[#dcfce7] cursor-pointer transition-all disabled:opacity-50"
                 />
                 {insuranceDetails.policyFileName && (
-                  <p className="mt-3 text-sm text-[#16a34a] font-semibold flex items-center gap-1.5">
-                    <ShieldCheck className="h-4 w-4" /> {insuranceDetails.policyFileName} ready
-                  </p>
+                  <div className="mt-3 flex items-center justify-between bg-[#f0fdf4] border border-[#dcfce7] rounded-xl px-4 py-2.5 shadow-sm">
+                    <span className="text-sm text-[#16a34a] font-semibold flex items-center gap-1.5">
+                      <ShieldCheck className="h-4 w-4" /> {insuranceDetails.policyFileName} ready
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInsuranceDetails((prev) => ({ ...prev, policyFileBase64: "", policyFileName: "" }));
+                        const input = document.getElementById("policyFileInput") as HTMLInputElement;
+                        if (input) input.value = "";
+                      }}
+                      className="text-red-500 hover:text-red-700 text-sm font-semibold flex items-center gap-1 hover:underline ml-2 transition-all"
+                      title="Remove file"
+                    >
+                      ✕ Remove
+                    </button>
+                  </div>
                 )}
               </div>
 
               <div className="flex gap-4">
                 <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1" disabled={loading}>Back</Button>
-                <Button type="submit" loading={loading} className="flex-1">
-                  {loading ? loadingText || "Processing..." : "Finish Setup"}
+                <Button 
+                  type="submit" 
+                  loading={loading} 
+                  className={`flex-1 transition-all ${
+                    error 
+                      ? "bg-red-600 hover:bg-red-700 border-red-600 text-white hover:text-white" 
+                      : ""
+                  }`}
+                >
+                  {loading ? loadingText || "Processing..." : error ? "Error - Try Again" : "Finish Setup"}
                 </Button>
               </div>
             </form>
@@ -460,7 +484,17 @@ export default function OnboardingPage() {
 
               <div className="flex gap-4">
                 <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1">Back</Button>
-                <Button type="submit" loading={loading} className="flex-1">Finish Setup</Button>
+                <Button 
+                  type="submit" 
+                  loading={loading} 
+                  className={`flex-1 transition-all ${
+                    error 
+                      ? "bg-red-600 hover:bg-red-700 border-red-600 text-white hover:text-white" 
+                      : ""
+                  }`}
+                >
+                  {loading ? loadingText || "Processing..." : error ? "Error - Try Again" : "Finish Setup"}
+                </Button>
               </div>
             </form>
           )}

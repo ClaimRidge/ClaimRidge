@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import Button from "@/components/ui/Button";
 import { formatRelativeTime } from "@/lib/utils/format";
@@ -16,10 +15,10 @@ import {
   Building2,
   Clock,
   BrainCircuit,
-  X
+  Stethoscope,
+  Zap,
+  X,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 interface PreAuthRequest {
   id: string;
@@ -29,12 +28,14 @@ interface PreAuthRequest {
   patient_id: string;
   claim_amount: number;
   status: string;
+  priority?: string | null;
   sla_deadline: string;
-  ai_decision: string | null;
-  ai_rationale: string | null;
   created_at: string;
-  // Authorization issued on approval
-  authorization_number?: string | null;
+  diagnosis_codes?: string[] | null;
+  procedure_codes?: string[] | null;
+  diagnosis_code?: string | null;
+  procedure_code?: string | null;
+  // Authorisation window stamped onto the reference on approval
   valid_until?: string | null;
   approved_procedures?: string[] | null;
   issued_at?: string | null;
@@ -48,6 +49,22 @@ interface PreAuthDocument {
   file_base64?: string;
 }
 
+const STATUS_PILL: Record<string, { label: string; cls: string }> = {
+  processing: { label: "Processing", cls: "bg-blue-100 text-blue-700 border-blue-200" },
+  pending: { label: "Awaiting Review", cls: "bg-amber-100 text-amber-700 border-amber-200" },
+  approved: { label: "Approved", cls: "bg-green-100 text-green-700 border-green-200" },
+  denied: { label: "Denied", cls: "bg-red-100 text-red-700 border-red-200" },
+};
+
+function slaInfo(deadlineIso: string | null | undefined) {
+  if (!deadlineIso) return null;
+  const diffH = (new Date(deadlineIso).getTime() - Date.now()) / 3_600_000;
+  if (diffH < 0) return { text: "SLA overdue", cls: "bg-red-50 text-red-600 border-red-200" };
+  if (diffH < 24) return { text: `${Math.floor(diffH)}h to SLA`, cls: "bg-red-50 text-red-600 border-red-200" };
+  if (diffH < 72) return { text: `${Math.floor(diffH / 24)}d ${Math.floor(diffH % 24)}h to SLA`, cls: "bg-amber-50 text-amber-600 border-amber-200" };
+  return { text: `${Math.floor(diffH / 24)}d to SLA`, cls: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]" };
+}
+
 export default function PreAuthReviewPage() {
   const params = useParams();
   const router = useRouter();
@@ -57,90 +74,103 @@ export default function PreAuthReviewPage() {
   const [documents, setDocuments] = useState<PreAuthDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  
+
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"visual" | "text">("visual");
   const [modal, setModal] = useState<"approve" | "deny" | null>(null);
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [activeBlobUrl, setActiveBlobUrl] = useState<string | null>(null);
+
+  // Generate a robust Blob URL for PDF documents to prevent browser data-URI security blocks.
+  useEffect(() => {
+    if (!activeDoc) {
+      setActiveBlobUrl(null);
+      return;
+    }
+    const doc = documents.find(d => d.id === activeDoc);
+    if (!doc || !doc.file_base64 || doc.file_type !== "application/pdf") {
+      setActiveBlobUrl(null);
+      return;
+    }
+
+    try {
+      const byteCharacters = atob(doc.file_base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      setActiveBlobUrl(url);
+
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    } catch (e) {
+      console.error("Failed to generate PDF blob URL:", e);
+      setActiveBlobUrl(null);
+    }
+  }, [activeDoc, documents]);
+
+  // `pre_auth_requests` has no RLS read policy, so a direct browser query
+  // returns zero rows (406). Go through the backend, which runs with the
+  // service role and tenant-checks the request against the caller's insurer.
+  const fetchDetail = useCallback(async (): Promise<
+    { request: PreAuthRequest; documents: PreAuthDocument[] } | null
+  > => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return null;
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/pre-auth/${params.id}`,
+      { headers: { Authorization: `Bearer ${session.access_token}` } },
+    );
+    if (!res.ok) return null;
+    return res.json();
+  }, [params.id, supabase]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      // 1. Fetch the request
-      const { data: reqData, error: reqErr } = await supabase
-        .from("pre_auth_requests")
-        .select("*")
-        .eq("id", params.id)
-        .single();
-
-      if (reqErr || !reqData) {
+    (async () => {
+      const data = await fetchDetail();
+      if (!data?.request) {
         setError("Pre-Authorisation request not found.");
         setLoading(false);
         return;
       }
-      setRequest(reqData);
-
-      // 2. Fetch the associated documents
-      const { data: docsData, error: docsErr } = await supabase
-        .from("pre_auth_documents")
-        .select("*")
-        .eq("pre_auth_id", params.id);
-
-      if (!docsErr && docsData) {
-        setDocuments(docsData);
-        if (docsData.length > 0) setActiveDoc(docsData[0].id);
-      }
-      
+      setRequest(data.request);
+      setDocuments(data.documents || []);
+      if (data.documents && data.documents.length > 0) setActiveDoc(data.documents[0].id);
       setLoading(false);
-    };
-
-    fetchData();
-  }, [params.id, supabase]);
-
-  // Polling for updates if still processing
-  useEffect(() => {
-    if (request?.status !== "processing") return;
-
-    const interval = setInterval(async () => {
-      const { data } = await supabase
-        .from("pre_auth_requests")
-        .select("*")
-        .eq("id", params.id)
-        .single();
-
-      if (data && data.status !== "processing") {
-        setRequest(data);
-      }
-    }, 3000); // Poll every 3 seconds for a responsive feel
-
-    return () => clearInterval(interval);
-  }, [request?.status, params.id, supabase]);
+    })();
+  }, [fetchDetail]);
 
   const handleDecision = async () => {
     if (!modal || !request) return;
     setSubmitting(true);
-    
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      
-      // Call our secure backend to process the decision and create an audit log
+
+      // Backend records the decision, activates/revokes the authorisation,
+      // and writes the immutable audit event.
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/pre-auth/${request.id}/review`, {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${session?.access_token}`
+          "Authorization": `Bearer ${session?.access_token}`,
         },
-        body: JSON.stringify({
-          action: modal,
-          reason: reason
-        })
+        body: JSON.stringify({ action: modal, reason }),
       });
 
       if (!res.ok) throw new Error("Failed to submit decision");
 
-      // Update local state to reflect the decision immediately
-      setRequest({ ...request, status: modal });
+      // Re-fetch so the activated authorisation (validity window, approved
+      // scope) is reflected in the panel.
+      const refreshed = await fetchDetail();
+      if (refreshed?.request) setRequest(refreshed.request);
       setModal(null);
+      setReason("");
     } catch (err) {
       console.error(err);
       alert("An error occurred while submitting your decision.");
@@ -168,13 +198,20 @@ export default function PreAuthReviewPage() {
     );
   }
 
-  const isDecided = request.status === "approve" || request.status === "deny";
+  const isDecided = request.status === "approved" || request.status === "denied";
+  const statusPill = STATUS_PILL[request.status] || { label: request.status, cls: "bg-gray-100 text-gray-600 border-gray-200" };
+  const sla = isDecided ? null : slaInfo(request.sla_deadline);
+  const expedited = (request.priority || "").toLowerCase().startsWith("exp");
 
-  const cleanRationale = (text: string | null) => {
-    if (!text) return null;
-    // Remove "The final answer is: $\boxed{...}$" or just "$\boxed{...}$"
-    return text.replace(/(The final answer is:\s*)?\$\\boxed\{[^}]*\}\$/gi, "").trim();
-  };
+  // Clinical codes — prefer the structured arrays, fall back to the singular columns.
+  const dxCodes = ((request.diagnosis_codes && request.diagnosis_codes.length
+    ? request.diagnosis_codes
+    : request.diagnosis_code ? [request.diagnosis_code] : []
+  ).filter(Boolean)) as string[];
+  const pxCodes = ((request.procedure_codes && request.procedure_codes.length
+    ? request.procedure_codes
+    : request.procedure_code ? [request.procedure_code] : []
+  ).filter(Boolean)) as string[];
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -184,18 +221,23 @@ export default function PreAuthReviewPage() {
           <ArrowLeft className="h-5 w-5" />
         </button>
         <div className="flex-1">
-          <div className="flex items-center gap-3">
-            <h1 className="font-sans text-xl sm:text-3xl font-bold text-[#0a0a0a] tracking-tight">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="font-sans text-xl sm:text-3xl font-bold text-[#0a0a0a] tracking-tight font-mono">
               {request.reference_number}
             </h1>
-            <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest ${
-              request.status === "approve" ? "bg-green-100 text-green-700 border border-green-200" :
-              request.status === "deny" ? "bg-red-100 text-red-700 border border-red-200" :
-              request.status === "escalated" ? "bg-amber-100 text-amber-700 border border-amber-200" :
-              "bg-blue-100 text-blue-700 border border-blue-200"
-            }`}>
-              {request.status}
+            <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest border ${statusPill.cls}`}>
+              {statusPill.label}
             </span>
+            {expedited && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-orange-50 text-orange-600 border border-orange-200">
+                <Zap className="h-3 w-3" /> Expedited
+              </span>
+            )}
+            {sla && (
+              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${sla.cls}`}>
+                <Clock className="h-3 w-3" /> {sla.text}
+              </span>
+            )}
           </div>
           <p className="text-sm text-[#9ca3af] mt-1 font-medium">
             Received {formatRelativeTime(request.created_at)}
@@ -204,20 +246,35 @@ export default function PreAuthReviewPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
+
         {/* LEFT COLUMN: Clinical Evidence */}
         <div className="lg:col-span-2 flex flex-col gap-6">
-          
-          {/* Patient & Provider Meta */}
-          <div className="bg-white border border-[#e5e7eb] rounded-xl p-5 shadow-sm flex flex-wrap gap-x-12 gap-y-4">
+
+          {/* Patient / Provider / Clinical codes */}
+          <div className="bg-white border border-[#e5e7eb] rounded-xl p-5 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-5">
             <div>
-              <p className="text-[10px] text-[#9ca3af] uppercase tracking-[0.2em] font-black mb-1.5 flex items-center gap-1.5"><User className="h-3 w-3"/> Patient</p>
+              <p className="text-[10px] text-[#9ca3af] uppercase tracking-[0.2em] font-black mb-1.5 flex items-center gap-1.5"><User className="h-3 w-3" /> Patient</p>
               <p className="text-sm font-bold text-[#0a0a0a] font-sans">{request.patient_name}</p>
               <p className="text-[10px] text-[#6b7280] font-mono mt-1 bg-gray-50 px-1.5 py-0.5 rounded w-fit">ID: {request.patient_id}</p>
             </div>
             <div>
-              <p className="text-[10px] text-[#9ca3af] uppercase tracking-[0.2em] font-black mb-1.5 flex items-center gap-1.5"><Building2 className="h-3 w-3"/> Provider</p>
+              <p className="text-[10px] text-[#9ca3af] uppercase tracking-[0.2em] font-black mb-1.5 flex items-center gap-1.5"><Building2 className="h-3 w-3" /> Provider</p>
               <p className="text-sm font-bold text-[#0a0a0a] font-sans">{request.provider_name}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-[#9ca3af] uppercase tracking-[0.2em] font-black mb-1.5 flex items-center gap-1.5"><Stethoscope className="h-3 w-3" /> Clinical Codes</p>
+              {dxCodes.length === 0 && pxCodes.length === 0 ? (
+                <p className="text-xs text-[#9ca3af]">None supplied</p>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {dxCodes.map((c) => (
+                    <span key={`dx-${c}`} title="Diagnosis" className="font-mono text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded">{c}</span>
+                  ))}
+                  {pxCodes.map((c) => (
+                    <span key={`px-${c}`} title="Procedure" className="font-mono text-[10px] bg-purple-50 text-purple-700 border border-purple-100 px-1.5 py-0.5 rounded">{c}</span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -243,13 +300,13 @@ export default function PreAuthReviewPage() {
               </div>
 
               <div className="flex bg-[#f3f4f6] p-1 rounded-lg border border-[#e5e7eb]">
-                <button 
+                <button
                   onClick={() => setViewMode("visual")}
                   className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${viewMode === "visual" ? "bg-white text-[#0A1628] shadow-sm" : "text-[#9ca3af] hover:text-[#6b7280]"}`}
                 >
                   Visual
                 </button>
-                <button 
+                <button
                   onClick={() => setViewMode("text")}
                   className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-md transition-all ${viewMode === "text" ? "bg-white text-[#0A1628] shadow-sm" : "text-[#9ca3af] hover:text-[#6b7280]"}`}
                 >
@@ -262,7 +319,7 @@ export default function PreAuthReviewPage() {
                 (() => {
                   const doc = documents.find(d => d.id === activeDoc);
                   if (!doc) return <div className="p-10 text-center text-gray-500">Document not found.</div>;
-                  
+
                   if (viewMode === "text") {
                     return (
                       <div className="p-8 h-full overflow-y-auto bg-white font-sans">
@@ -282,9 +339,17 @@ export default function PreAuthReviewPage() {
 
                   if (doc.file_base64) {
                     if (doc.file_type === "application/pdf") {
+                      if (!activeBlobUrl) {
+                        return (
+                          <div className="flex flex-col items-center justify-center h-full p-12 text-center flex-1">
+                            <div className="animate-spin h-8 w-8 border-4 border-[#0A1628] border-t-transparent rounded-full mb-3 mx-auto" />
+                            <p className="text-sm text-gray-500 font-sans">Preparing secure PDF viewer...</p>
+                          </div>
+                        );
+                      }
                       return (
-                        <iframe 
-                          src={`data:application/pdf;base64,${doc.file_base64}#toolbar=0&navpanes=0&scrollbar=1`} 
+                        <iframe
+                          src={`${activeBlobUrl}#toolbar=0&navpanes=0&scrollbar=1`}
                           className="w-full h-full border-0 flex-1"
                           title={doc.file_name}
                         />
@@ -292,16 +357,16 @@ export default function PreAuthReviewPage() {
                     } else if (doc.file_type.startsWith("image/")) {
                       return (
                         <div className="w-full h-full flex items-center justify-center p-4 bg-gray-50 overflow-auto">
-                          <img 
-                            src={`data:${doc.file_type};base64,${doc.file_base64}`} 
-                            alt={doc.file_name} 
+                          <img
+                            src={`data:${doc.file_type};base64,${doc.file_base64}`}
+                            alt={doc.file_name}
                             className="max-w-full max-h-full object-contain shadow-xl rounded-lg border border-gray-200"
                           />
                         </div>
                       );
                     }
                   }
-                  
+
                   return (
                     <div className="flex flex-col items-center justify-center h-full p-12 text-center">
                       <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
@@ -309,7 +374,7 @@ export default function PreAuthReviewPage() {
                       </div>
                       <h3 className="text-lg font-bold text-gray-900">Preview Unavailable</h3>
                       <p className="text-sm text-gray-500 mt-2 max-w-sm">
-                        The real document ({doc.file_name}) cannot be previewed. 
+                        The real document ({doc.file_name}) cannot be previewed.
                         Only PDF and Image files are supported for inline viewing.
                       </p>
                     </div>
@@ -325,84 +390,32 @@ export default function PreAuthReviewPage() {
           </div>
         </div>
 
-        {/* RIGHT COLUMN: AI Analysis & Actions */}
+        {/* RIGHT COLUMN: Reviewer Decision */}
         <div className="flex flex-col gap-6">
-          
-          {/* AI Decision Panel */}
-          <div className={`border rounded-2xl p-7 shadow-lg transition-all ${
-            request.ai_decision === "approve" ? "bg-[#f0fdf4] border-[#bbf7d0]" :
-            request.ai_decision === "deny" ? "bg-red-50 border-red-200" :
-            "bg-[#fffbeb] border-[#fef3c7]"
-          }`}>
-            <div className="flex items-center gap-2.5 mb-6">
-              <div className={`p-2 rounded-lg ${
-                request.ai_decision === "approve" ? "bg-green-100" :
-                request.ai_decision === "deny" ? "bg-red-100" : "bg-amber-100"
-              }`}>
-                <BrainCircuit className={`h-5 w-5 ${
-                  request.ai_decision === "approve" ? "text-[#16a34a]" :
-                  request.ai_decision === "deny" ? "text-red-600" : "text-amber-600"
-                }`} />
-              </div>
-              <h3 className="font-sans font-bold text-[#0a0a0a] text-xl tracking-tight">AI Clinical Triage</h3>
-            </div>
-            
-            <div className="mb-8">
-              <div className={`inline-flex items-center px-4 py-2 rounded-xl text-xs font-black uppercase tracking-[0.1em] border-2 shadow-sm ${
-                request.ai_decision === "approve" ? "bg-white text-[#16a34a] border-[#bbf7d0]" :
-                request.ai_decision === "deny" ? "bg-white text-red-800 border-red-200" :
-                "bg-white text-amber-800 border-amber-200"
-              }`}>
-                {request.ai_decision === "escalate" ? "Manual Review Required" : `Recommendation: ${request.ai_decision}`}
-              </div>
-            </div>
 
-            <div className="bg-white/60 backdrop-blur-sm rounded-xl p-5 border border-black/[0.03]">
-              <strong className="block text-[10px] uppercase tracking-[0.2em] text-[#9ca3af] mb-4 font-black">
-                Clinical Rationale & Evidence
-              </strong>
-              <div className="text-[#374151] leading-relaxed font-sans text-sm">
-                <ReactMarkdown 
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    h1: ({node, ...props}) => <h1 className="font-sans font-bold text-[#0a0a0a] text-lg mb-4 mt-6 first:mt-0 uppercase tracking-tight" {...props} />,
-                    h2: ({node, ...props}) => <h2 className="font-sans font-bold text-[#0a0a0a] text-base mb-3 mt-5 uppercase tracking-tight" {...props} />,
-                    h3: ({node, ...props}) => <h3 className="font-sans font-bold text-[#0a0a0a] text-sm mb-2 mt-4 uppercase tracking-tight" {...props} />,
-                    p: ({node, ...props}) => <p className="mb-4 last:mb-0 text-sm leading-relaxed" {...props} />,
-                    strong: ({node, ...props}) => <strong className="font-bold text-[#0a0a0a]" {...props} />,
-                    ul: ({node, ...props}) => <ul className="list-disc pl-5 mb-4 space-y-2" {...props} />,
-                    li: ({node, ...props}) => <li className="text-sm leading-relaxed pl-1" {...props} />,
-                  }}
-                >
-                  {cleanRationale(request.ai_rationale) || "*The AI engine is synthesizing clinical evidence. This may take up to 30 seconds...*"}
-                </ReactMarkdown>
-              </div>
-            </div>
-          </div>
-
-          {/* Adjudication Actions */}
+          {/* Reviewer Decision */}
           <div className="bg-white border border-[#e5e7eb] rounded-xl p-5 shadow-sm">
-            <h3 className="font-display font-bold text-[#0a0a0a] mb-4">Final Adjudication</h3>
-            
+            <h3 className="font-display font-bold text-[#0a0a0a] mb-4">Reviewer Decision</h3>
+
             {isDecided ? (
               <div className="text-center py-4 space-y-4">
                 <div>
-                  <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${request.status === "approve" ? "bg-green-100" : "bg-red-100"}`}>
-                    {request.status === "approve" ? <CheckCircle className="h-6 w-6 text-[#16a34a]" /> : <XCircle className="h-6 w-6 text-red-600" />}
+                  <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${request.status === "approved" ? "bg-green-100" : "bg-red-100"}`}>
+                    {request.status === "approved" ? <CheckCircle className="h-6 w-6 text-[#16a34a]" /> : <XCircle className="h-6 w-6 text-red-600" />}
                   </div>
                   <p className="font-bold text-[#0a0a0a]">
-                    This request was {request.status === "approve" ? "approved" : "denied"}.
+                    This request was {request.status === "approved" ? "approved" : "denied"}.
                   </p>
                 </div>
 
-                {/* Authorization number block — visible only on approvals */}
-                {request.status === "approve" && request.authorization_number && (
+                {/* Active-authorisation block — visible only on approvals */}
+                {request.status === "approved" && (
                   <div className="text-left bg-[#f0fdf4] border border-[#bbf7d0] rounded-xl p-4">
                     <p className="text-[10px] uppercase tracking-widest font-bold text-[#15803d] mb-1">
-                      Authorization Number
+                      Active Authorisation — Pre-Auth Reference
                     </p>
                     <p className="font-mono text-lg font-bold text-[#0a0a0a] tracking-wider break-all">
-                      {request.authorization_number}
+                      {request.reference_number}
                     </p>
                     <div className="grid grid-cols-2 gap-3 mt-3 text-xs">
                       <div>
@@ -433,7 +446,7 @@ export default function PreAuthReviewPage() {
                       </div>
                     )}
                     <p className="text-[10px] text-[#15803d] mt-3 leading-relaxed">
-                      Share this number with the provider. They must reference it on the claim
+                      Share this reference with the provider. They must cite it on the claim
                       they file after service to avoid auth-mismatch denials.
                     </p>
                   </div>
@@ -441,6 +454,9 @@ export default function PreAuthReviewPage() {
               </div>
             ) : (
               <div className="space-y-3">
+                <p className="text-xs text-[#6b7280] leading-relaxed">
+                  Approve to issue the authorisation, or deny the request. This decision is final and is recorded in the audit trail.
+                </p>
                 <Button className="w-full gap-2 bg-[#16a34a] hover:bg-[#15803d]" onClick={() => setModal("approve")}>
                   <CheckCircle className="h-4 w-4" /> Approve Request
                 </Button>
@@ -466,8 +482,9 @@ export default function PreAuthReviewPage() {
             </h3>
             <p className="text-sm text-[#6b7280] mb-4">
               You are about to {modal} request <span className="font-mono font-bold text-[#0a0a0a]">{request.reference_number}</span>.
+              {modal === "approve" && " This activates the authorisation on the reference above."}
             </p>
-            
+
             <label className="block text-sm font-medium text-[#374151] mb-1.5">
               Reasoning / Internal Notes {modal === "deny" && <span className="text-red-500">*</span>}
             </label>
@@ -478,12 +495,12 @@ export default function PreAuthReviewPage() {
               placeholder="Enter clinical rationale..."
               className="w-full px-3 py-2 border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#0A1628] resize-none"
             />
-            
+
             <div className="flex gap-3 mt-6">
               <Button variant="outline" className="flex-1" onClick={() => { setModal(null); setReason(""); }}>
                 Cancel
               </Button>
-              <Button 
+              <Button
                 className={`flex-1 ${modal === "deny" ? "bg-red-600 hover:bg-red-700" : ""}`}
                 onClick={handleDecision}
                 loading={submitting}

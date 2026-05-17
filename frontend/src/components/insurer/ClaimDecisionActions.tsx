@@ -16,8 +16,12 @@ export default function ClaimDecisionActions({ claim, onDecision }: Props) {
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const isDecided = claim.status === "approved" || claim.status === "rejected";
-  const canDecide = claim.status === "pending" || claim.status === "under_review" || claim.status === "needs_info";
+  // "approved"/"rejected" come from a human review; "accepted"/"denied" from
+  // automatic adjudication — both are terminal. "escalated" claims await a
+  // human, so they remain decidable here.
+  const isDecided = ["approved", "rejected", "accepted", "denied"].includes(claim.status);
+  const canDecide = ["pending", "under_review", "needs_info", "escalated"].includes(claim.status);
+  const isPositive = claim.status === "approved" || claim.status === "accepted";
 
   const handleSubmit = async () => {
     if (!modal) return;
@@ -34,18 +38,18 @@ export default function ClaimDecisionActions({ claim, onDecision }: Props) {
       <div className="bg-white border border-[#e5e7eb] rounded-xl p-6 shadow-sm">
         <h3 className="font-display font-bold text-[#0a0a0a] mb-3">Decision</h3>
         <div className={`p-4 rounded-lg border ${
-          claim.status === "approved"
+          isPositive
             ? "bg-[#f0fdf4] border-[#bbf7d0]"
             : "bg-red-50 border-red-200"
         }`}>
           <div className="flex items-center gap-2 mb-1">
-            {claim.status === "approved" ? (
+            {isPositive ? (
               <CheckCircle className="h-4 w-4 text-[#16a34a]" />
             ) : (
               <XCircle className="h-4 w-4 text-red-500" />
             )}
-            <span className="font-medium text-sm">
-              {claim.status === "approved" ? "Approved" : "Rejected"}
+            <span className="font-medium text-sm capitalize">
+              {claim.status}
             </span>
           </div>
           {claim.decided_at && (

@@ -15,7 +15,6 @@ import {
   DollarSign,
   ShieldAlert,
   TrendingUp,
-  Activity,
 } from "lucide-react";
 import Button from "@/components/ui/Button";
 
@@ -29,7 +28,6 @@ interface PreAuthRequest {
   claim_amount: number;
   status: string;
   sla_deadline: string;
-  ai_decision: string | null;
   created_at: string;
 }
 
@@ -151,7 +149,7 @@ export default function InsurerDashboardPage() {
       const j = await paRes.json();
       const sorted = (j.data || []).sort(
         (a: PreAuthRequest, b: PreAuthRequest) =>
-          new Date(a.sla_deadline).getTime() - new Date(b.sla_deadline).getTime()
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
       setPreAuths(sorted);
     } else {
@@ -174,13 +172,13 @@ export default function InsurerDashboardPage() {
   // ─── Pre-auth KPIs ────────────────────────────────────
   const paKpis = useMemo(() => {
     const today = new Date();
-    const escalated = preAuths.filter(p => p.status === "escalated" || p.ai_decision === "escalate").length;
-    const processing = preAuths.filter(p => p.status === "processing").length;
+    const awaitingReview = preAuths.filter(p => p.status === "pending").length;
+    const denied = preAuths.filter(p => p.status === "denied").length;
     const approvedToday = preAuths.filter(p =>
       (p.status === "approve" || p.status === "approved") &&
       isSameDay(new Date(p.created_at), today)
     ).length;
-    return { total: preAuths.length, escalated, processing, approvedToday };
+    return { total: preAuths.length, awaitingReview, denied, approvedToday };
   }, [preAuths]);
 
   // ─── Claims KPIs ──────────────────────────────────────
@@ -218,13 +216,12 @@ export default function InsurerDashboardPage() {
   // ─── Decision breakdown for pre-auth (real %) ─────────
   const decisionMix = useMemo(() => {
     const total = preAuths.length || 1;
-    const approve = preAuths.filter(p => p.ai_decision === "approve").length;
-    const escalate = preAuths.filter(p => p.ai_decision === "escalate").length;
-    const deny = preAuths.filter(p => p.ai_decision === "deny").length;
-    const pending = preAuths.filter(p => !p.ai_decision).length;
+    const isApproved = (s: string) => s === "approve" || s === "approved";
+    const approve = preAuths.filter(p => isApproved(p.status)).length;
+    const deny = preAuths.filter(p => p.status === "denied").length;
+    const pending = preAuths.filter(p => !isApproved(p.status) && p.status !== "denied").length;
     return {
       approve: { count: approve, pct: Math.round((approve / total) * 100) },
-      escalate: { count: escalate, pct: Math.round((escalate / total) * 100) },
       deny: { count: deny, pct: Math.round((deny / total) * 100) },
       pending: { count: pending, pct: Math.round((pending / total) * 100) },
     };
@@ -255,9 +252,9 @@ export default function InsurerDashboardPage() {
           </p>
         </div>
         <div className="flex gap-3 flex-wrap">
-          <Link href="/dashboard/insurance/queue">
+          <Link href="/dashboard/insurance/pre-auth">
             <Button variant="outline" className="gap-2 font-bold">
-              <Inbox className="h-4 w-4" /> Pre-Auth Queue
+              <Inbox className="h-4 w-4" /> Pre-Auth Inbox
             </Button>
           </Link>
           <Link href="/dashboard/insurance/claims">
@@ -273,16 +270,16 @@ export default function InsurerDashboardPage() {
       {/* ════════════════════════════════════════════════════════════ */}
       <SectionHeader
         title="Pre-Authorisations"
-        subtitle="Clinical review queue — AI runs medical-necessity checks against your policy."
+        subtitle="Clinical review queue — every request is reviewed and decided by your medical team."
         icon={Inbox}
         accent="green"
       />
 
       <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <KpiCard label="Active Workload" value={paKpis.total} icon={Inbox} color="blue" description="Total pre-auths in queue" />
-        <KpiCard label="Needs Review" value={paKpis.escalated} icon={AlertTriangle} color="amber" description="Escalated to medical reviewer" />
-        <KpiCard label="Processing" value={paKpis.processing} icon={Clock} color="blue" description="Awaiting AI evaluation" />
-        <KpiCard label="Approved Today" value={paKpis.approvedToday} icon={CheckCircle} color="green" description="Auto-approved in last 24h" />
+        <KpiCard label="Needs Review" value={paKpis.awaitingReview} icon={AlertTriangle} color="amber" description="Awaiting manual review" />
+        <KpiCard label="Denied" value={paKpis.denied} icon={XCircle} color="red" description="Declined requests" />
+        <KpiCard label="Approved Today" value={paKpis.approvedToday} icon={CheckCircle} color="green" description="Approved in last 24h" />
       </div>
 
       {/* Decision mix bar */}
@@ -294,21 +291,19 @@ export default function InsurerDashboardPage() {
           </div>
           <div className="flex h-2.5 rounded-full overflow-hidden bg-[#f3f4f6]">
             <div className="bg-[#16a34a]" style={{ width: `${decisionMix.approve.pct}%` }} />
-            <div className="bg-amber-500" style={{ width: `${decisionMix.escalate.pct}%` }} />
             <div className="bg-red-500" style={{ width: `${decisionMix.deny.pct}%` }} />
             <div className="bg-gray-300" style={{ width: `${decisionMix.pending.pct}%` }} />
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 text-xs">
-            <DecisionLegend color="bg-[#16a34a]" label="Approve" count={decisionMix.approve.count} pct={decisionMix.approve.pct} />
-            <DecisionLegend color="bg-amber-500" label="Escalate" count={decisionMix.escalate.count} pct={decisionMix.escalate.pct} />
-            <DecisionLegend color="bg-red-500" label="Deny" count={decisionMix.deny.count} pct={decisionMix.deny.pct} />
+          <div className="grid grid-cols-3 gap-3 mt-3 text-xs">
+            <DecisionLegend color="bg-[#16a34a]" label="Approved" count={decisionMix.approve.count} pct={decisionMix.approve.pct} />
+            <DecisionLegend color="bg-red-500" label="Denied" count={decisionMix.deny.count} pct={decisionMix.deny.pct} />
             <DecisionLegend color="bg-gray-300" label="Pending" count={decisionMix.pending.count} pct={decisionMix.pending.pct} />
           </div>
         </div>
       )}
 
       {/* Pre-auth recent table */}
-      <Card title="Priority Pre-Auth Inbox" subtitle="5 most urgent" linkHref="/dashboard/insurance/queue" linkLabel="See all">
+      <Card title="Priority Pre-Auth Inbox" subtitle="5 latest submissions" linkHref="/dashboard/insurance/pre-auth" linkLabel="See all">
         {recentPreAuths.length === 0 ? (
           <Empty icon={CheckCircle} title="Queue clear" subtitle="No active pre-authorisation requests." />
         ) : (
@@ -316,8 +311,8 @@ export default function InsurerDashboardPage() {
             <thead>
               <tr className="bg-[#fafbfc] text-left border-b border-[#f3f4f6]">
                 <Th>Patient / ID</Th>
+                <Th>Submitted</Th>
                 <Th>SLA</Th>
-                <Th>AI Decision</Th>
                 <Th>Status</Th>
                 <th className="px-6 py-4" />
               </tr>
@@ -332,20 +327,23 @@ export default function InsurerDashboardPage() {
                       <div className="text-[10px] font-mono text-[#9ca3af] mt-0.5 uppercase">{req.patient_id}</div>
                     </td>
                     <td className="px-6 py-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-[#6b7280]">
+                        {new Date(req.created_at).toLocaleDateString()}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
                       <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${sla.bg} ${sla.color}`}>
                         {sla.text}
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <AiBadge decision={req.ai_decision} />
-                    </td>
-                    <td className="px-6 py-4">
                       <span className={`text-[10px] font-black uppercase tracking-[0.15em] ${
-                        req.status === "escalated" ? "text-amber-600" :
+                        req.status === "pending" ? "text-amber-600" :
                         req.status === "approved" || req.status === "approve" ? "text-[#16a34a]" :
+                        req.status === "denied" ? "text-red-600" :
                         "text-[#9ca3af]"
                       }`}>
-                        {req.status}
+                        {req.status === "pending" ? "Awaiting Review" : req.status}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -522,19 +520,6 @@ function Card({ title, subtitle, linkHref, linkLabel, children }: {
 
 function Th({ children }: { children: React.ReactNode }) {
   return <th className="px-6 py-4 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.15em]">{children}</th>;
-}
-
-function AiBadge({ decision }: { decision: string | null }) {
-  if (decision === "approve") {
-    return <span className="inline-flex items-center gap-1.5 bg-green-50 text-[#16a34a] px-2.5 py-1 rounded-lg border border-green-100 text-[10px] font-black uppercase tracking-widest"><CheckCircle className="h-3 w-3" /> Safe</span>;
-  }
-  if (decision === "deny") {
-    return <span className="inline-flex items-center gap-1.5 bg-red-50 text-red-600 px-2.5 py-1 rounded-lg border border-red-100 text-[10px] font-black uppercase tracking-widest"><XCircle className="h-3 w-3" /> Deny</span>;
-  }
-  if (decision === "escalate") {
-    return <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-600 px-2.5 py-1 rounded-lg border border-amber-100 text-[10px] font-black uppercase tracking-widest"><AlertTriangle className="h-3 w-3" /> Escalate</span>;
-  }
-  return <span className="inline-flex items-center gap-1.5 bg-gray-50 text-gray-400 px-2.5 py-1 rounded-lg border border-gray-100 text-[10px] font-black uppercase tracking-widest"><Activity className="h-3 w-3 animate-pulse" /> Scanning</span>;
 }
 
 function FraudBadge({ level, score }: { level: ClaimRow["fraud_risk_level"]; score: number | null }) {

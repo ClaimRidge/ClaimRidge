@@ -8,6 +8,10 @@ const CONFIG: Record<InsurerClaimStatus, { label: string; class: string }> = {
   approved: { label: "Approved", class: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]" },
   rejected: { label: "Rejected", class: "bg-red-50 text-red-700 border-red-200" },
   needs_info: { label: "Needs Info", class: "bg-amber-50 text-amber-700 border-amber-200" },
+  // Automatic adjudication verdicts
+  accepted: { label: "Accepted", class: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]" },
+  denied: { label: "Denied", class: "bg-red-50 text-red-700 border-red-200" },
+  escalated: { label: "Escalated", class: "bg-amber-50 text-amber-700 border-amber-200" },
 };
 
 export default function ClaimStatusPill({ status }: { status: InsurerClaimStatus }) {

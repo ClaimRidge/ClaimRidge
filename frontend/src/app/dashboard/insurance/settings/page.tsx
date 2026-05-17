@@ -6,6 +6,7 @@ import { User } from "@supabase/supabase-js";
 import Link from "next/link";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import Select from "@/components/ui/Select";
 import {
   Building2,
   Save,
@@ -225,13 +226,11 @@ export default function InsuranceSettingsPage() {
             <Input label="Legal Name (Arabic)" value={formData.nameAr} onChange={e => setFormData({ ...formData, nameAr: e.target.value })} icon={Globe} className="text-right" dir="rtl" />
             <div className="space-y-1.5">
               <label className="block text-sm font-medium text-gray-700">Country (MENA)</label>
-              <select
+              <Select
                 value={formData.country}
-                onChange={e => setFormData({ ...formData, country: e.target.value })}
-                className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm cursor-pointer"
-              >
-                {MENA_COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+                onChange={(country) => setFormData({ ...formData, country })}
+                options={MENA_COUNTRIES.map((c) => ({ value: c, label: c }))}
+              />
             </div>
           </div>
 

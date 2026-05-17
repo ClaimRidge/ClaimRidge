@@ -1,362 +1,319 @@
--- ============================================================================
--- ClaimRidge — unified schema reference
--- ----------------------------------------------------------------------------
--- This is the source-of-truth schema for the merged provider + insurer
--- platform. To install on a fresh Supabase project, run
--- `migrations/002_clean_reset.sql` (which drops any existing ClaimRidge tables
--- and recreates them from scratch).
---
--- Design principles:
---   • `profiles` is THIN — only user-level fields (one row per auth.users).
---   • Organisations live in their own tables: `insurers` (payer companies)
---     and `provider_orgs` (hospitals / clinics).
---   • Membership / staff relationships are dedicated join columns/tables:
---       profiles.insurer_id      — insurer staff
---       profiles.provider_org_id — provider admin owning the org
---       doctor_org_links         — doctors affiliated with one or more orgs
--- ============================================================================
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- ============================================================================
--- TENANT / ORG ROOTS
--- ============================================================================
-
--- Insurance companies (payers).
-CREATE TABLE public.insurers (
-  id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name                        text NOT NULL,
-  name_ar                     text,
-  country                     text DEFAULT 'Jordan',
-  cbj_operations_license      text UNIQUE,
-  commercial_license_number   text UNIQUE,
-  config                      jsonb DEFAULT '{}'::jsonb,
-  created_at                  timestamptz DEFAULT now(),
-  updated_at                  timestamptz DEFAULT now()
-);
-
--- Hospitals / clinics on the provider side.
-CREATE TABLE public.provider_orgs (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name            text NOT NULL,
-  name_ar         text,
-  org_code        text NOT NULL UNIQUE,      -- shareable code for doctors to join
-  license_number  text UNIQUE,
-  country         text DEFAULT 'Jordan',
-  address         text,
-  contact_email   text,
-  config          jsonb DEFAULT '{}'::jsonb,
-  created_at      timestamptz DEFAULT now(),
-  updated_at      timestamptz DEFAULT now()
-);
-
--- ============================================================================
--- USERS (1 row per auth.users)
--- ============================================================================
-
-CREATE TABLE public.profiles (
-  id              uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  account_type    text NOT NULL CHECK (account_type IN ('provider','doctor','insurance')),
-  full_name       text,
-  contact_email   text,
-
-  -- INSURER STAFF (account_type = 'insurance')
-  insurer_id      uuid REFERENCES public.insurers(id)      ON DELETE SET NULL,
-  role            text,  -- 'admin' | 'medical_officer'
-
-  -- PROVIDER ADMIN (account_type = 'provider')
-  -- The provider_org_id points to the hospital they own.
-  -- DOCTOR (account_type = 'doctor')
-  -- The provider_org_id is their primary affiliation (or NULL = solo).
-  provider_org_id uuid REFERENCES public.provider_orgs(id) ON DELETE SET NULL,
-
-  -- DOCTOR-SPECIFIC
-  doctor_specialty       text,
-  doctor_license_number  text,
-
-  -- Misc per-user prefs
-  config          jsonb DEFAULT '{}'::jsonb,
-  created_at      timestamptz DEFAULT now(),
-  updated_at      timestamptz DEFAULT now()
-);
-
-CREATE INDEX profiles_account_type_idx     ON public.profiles(account_type);
-CREATE INDEX profiles_insurer_id_idx       ON public.profiles(insurer_id)
-                                           WHERE insurer_id IS NOT NULL;
-CREATE INDEX profiles_provider_org_id_idx  ON public.profiles(provider_org_id)
-                                           WHERE provider_org_id IS NOT NULL;
-
--- Doctors may be linked to multiple hospitals; this is the many-to-many join.
-CREATE TABLE public.doctor_org_links (
-  doctor_id        uuid NOT NULL REFERENCES public.profiles(id)      ON DELETE CASCADE,
-  provider_org_id  uuid NOT NULL REFERENCES public.provider_orgs(id) ON DELETE CASCADE,
-  created_at       timestamptz DEFAULT now(),
-  PRIMARY KEY (doctor_id, provider_org_id)
-);
-
--- ============================================================================
--- POLICY EMBEDDINGS (insurer-side RAG)
--- ============================================================================
-
-CREATE TABLE public.policy_chunks (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  insurer_id  uuid NOT NULL REFERENCES public.insurers(id) ON DELETE CASCADE,
-  content     text NOT NULL,
-  embedding   vector(768),
-  created_at  timestamptz DEFAULT now()
-);
-
-CREATE INDEX policy_chunks_insurer_id_idx ON public.policy_chunks(insurer_id);
-
--- ============================================================================
--- INSURER-SIDE: PRE-AUTH REQUESTS + DOCUMENTS
--- ============================================================================
-
-CREATE TABLE public.pre_auth_requests (
-  id                              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  insurer_id                      uuid NOT NULL REFERENCES public.insurers(id) ON DELETE CASCADE,
-  reference_number                text NOT NULL UNIQUE,
-
-  -- identity (extracted from uploaded docs)
-  provider_name                   text NOT NULL,
-  patient_name                    text NOT NULL,
-  patient_id                      text NOT NULL,
-  patient_age                     integer,
-  patient_gender                  text,
-  patient_state                   text,
-
-  -- clinical
-  diagnosis_code                  text,
-  procedure_code                  text,
-  provider_specialty              text,
-  visit_type                      text,
-  length_of_stay                  integer,
-  insurance_type                  text,
-  claim_amount                    numeric DEFAULT 0,
-  currency                        text DEFAULT 'JOD',
-
-  -- workflow
-  status                          text NOT NULL DEFAULT 'processing',
-  sla_deadline                    timestamptz NOT NULL,
-  assigned_to                     uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
-  ai_decision                     text,
-  ai_rationale                    text,
-
-  -- derived analytics fields (used by fraud model)
-  days_between_service_and_claim  integer,
-  submission_month                integer,
-  submission_day_of_week          integer,
-
-  created_at                      timestamptz DEFAULT now(),
-  updated_at                      timestamptz DEFAULT now()
-);
-
-CREATE INDEX pre_auth_insurer_id_idx ON public.pre_auth_requests(insurer_id);
-CREATE INDEX pre_auth_status_idx     ON public.pre_auth_requests(status);
-CREATE INDEX pre_auth_sla_idx        ON public.pre_auth_requests(sla_deadline);
-
-CREATE TABLE public.pre_auth_documents (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  pre_auth_id     uuid NOT NULL REFERENCES public.pre_auth_requests(id) ON DELETE CASCADE,
-  file_name       text NOT NULL,
-  file_type       text NOT NULL,
-  file_base64     text,
-  extracted_text  text,
-  created_at      timestamptz DEFAULT now()
-);
-
-CREATE INDEX pre_auth_documents_pre_auth_id_idx ON public.pre_auth_documents(pre_auth_id);
-
--- ============================================================================
--- PROVIDER-SIDE: CLAIMS
--- ============================================================================
-
-CREATE TABLE public.claims (
-  id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  claim_number         text UNIQUE,
-
-  -- WHO submitted, FROM which org, TO which payer
-  user_id              uuid REFERENCES public.profiles(id)      ON DELETE SET NULL, -- submitter
-  clinic_id            uuid REFERENCES public.provider_orgs(id) ON DELETE SET NULL, -- billing org
-  payer_id             uuid REFERENCES public.insurers(id)      ON DELETE SET NULL, -- registered payer (NULL if unregistered)
-
-  -- patient
-  member_id            text,
-  patient_name         text,
-  patient_id           text,
-
-  -- denormalised cache (avoid joins in queue listings)
-  provider_name        text,
-  payer_name           text,
-
-  -- clinical
-  date_of_service      date NOT NULL,
-  diagnosis_codes      text[],
-  procedure_codes      text[],
-  total_billed         numeric NOT NULL DEFAULT 0,
-  total_allowed        numeric DEFAULT 0,
-  currency             text DEFAULT 'JOD',
-
-  -- workflow
-  status               text NOT NULL DEFAULT 'intake_complete',
-  notes                text,
-  scrub_result         jsonb DEFAULT '{}'::jsonb,
-  scrub_passed         boolean DEFAULT false,
-  scrub_warnings       integer DEFAULT 0,
-
-  -- ai
-  ai_risk_score        integer CHECK (ai_risk_score IS NULL OR ai_risk_score BETWEEN 0 AND 100),
-  ai_complexity_score  integer CHECK (ai_complexity_score IS NULL OR ai_complexity_score BETWEEN 1 AND 5),
-  ai_recommendation    text,
-
-  created_at           timestamptz DEFAULT now(),
-  updated_at           timestamptz DEFAULT now()
-);
-
-CREATE INDEX claims_user_id_idx   ON public.claims(user_id);
-CREATE INDEX claims_clinic_id_idx ON public.claims(clinic_id);
-CREATE INDEX claims_payer_id_idx  ON public.claims(payer_id);
-CREATE INDEX claims_status_idx    ON public.claims(status);
-
-CREATE TABLE public.claim_lines (
-  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  claim_id        uuid NOT NULL REFERENCES public.claims(id) ON DELETE CASCADE,
-  cpt_code        text NOT NULL,
-  icd10_code      text NOT NULL,
-  units           integer DEFAULT 1,
-  billed_amount   numeric NOT NULL DEFAULT 0,
-  allowed_amount  numeric DEFAULT 0,
-  denial_reason   text,
-  metadata        jsonb DEFAULT '{}'::jsonb
-);
-
-CREATE INDEX claim_lines_claim_id_idx ON public.claim_lines(claim_id);
-
-CREATE TABLE public.claims_audit (
-  id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  claim_id                uuid REFERENCES public.claims(id)   ON DELETE CASCADE,
-  user_id                 uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
-  claim_reference_number  text,
-  patient_name            text,
-  date_of_service         date,
-  provider_name           text,
-  payer_name              text,
-  diagnosis_codes         text[],
-  procedure_codes         text[],
-  billed_amount           numeric,
-  ai_flags                jsonb DEFAULT '[]'::jsonb,
-  ai_corrections          jsonb DEFAULT '{}'::jsonb,
-  export_count            integer DEFAULT 0,
-  created_at              timestamptz DEFAULT now()
-);
-
-CREATE INDEX claims_audit_claim_id_idx  ON public.claims_audit(claim_id);
-CREATE INDEX claims_audit_user_id_idx   ON public.claims_audit(user_id);
-CREATE INDEX claims_audit_reference_idx ON public.claims_audit(claim_reference_number);
-
--- ============================================================================
--- SHARED LOGS
--- ============================================================================
-
-CREATE TABLE public.audit_log (
-  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  actor_id      uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
-  action        text NOT NULL,
-  target_id     uuid NOT NULL,
-  target_type   text NOT NULL,
-  payload_hash  text NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now()
-);
-
--- ai_inference_log can reference EITHER a claim (provider) or a pre-auth
--- (insurer). Exactly one of claim_id / pre_auth_id is set per row.
 CREATE TABLE public.ai_inference_log (
-  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  claim_id              uuid REFERENCES public.claims(id)             ON DELETE CASCADE,
-  pre_auth_id           uuid REFERENCES public.pre_auth_requests(id)  ON DELETE CASCADE,
-  model_version         text NOT NULL,
-  prompt_template_name  text,
-  input_data            jsonb NOT NULL,
-  output_data           jsonb NOT NULL,
-  confidence_score      numeric,
-  latency_ms            integer,
-  created_at            timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT ai_inference_log_one_target_chk
-    CHECK ((claim_id IS NOT NULL) <> (pre_auth_id IS NOT NULL))
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  claim_id uuid,
+  pre_auth_id uuid,
+  model_version text NOT NULL,
+  prompt_template_name text,
+  input_data jsonb NOT NULL,
+  output_data jsonb NOT NULL,
+  confidence_score numeric,
+  latency_ms integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  prompt_text text,
+  event_type text,
+  actor_id uuid,
+  tenant_type text,
+  tenant_id uuid,
+  CONSTRAINT ai_inference_log_pkey PRIMARY KEY (id)
 );
-
--- ============================================================================
--- RPC: vector similarity search for policy rules (used by both AI flows)
--- ============================================================================
-
-CREATE OR REPLACE FUNCTION public.match_policy_rules(
-  query_embedding vector(768),
-  match_threshold float,
-  match_count int,
-  p_insurer_id uuid
-)
-RETURNS TABLE (id uuid, content text, similarity float)
-LANGUAGE plpgsql AS $$
-BEGIN
-  RETURN QUERY
-  SELECT
-    pc.id,
-    pc.content,
-    1 - (pc.embedding <=> query_embedding) AS similarity
-  FROM public.policy_chunks pc
-  WHERE pc.insurer_id = p_insurer_id
-    AND 1 - (pc.embedding <=> query_embedding) > match_threshold
-  ORDER BY pc.embedding <=> query_embedding
-  LIMIT match_count;
-END;
-$$;
-
--- ============================================================================
--- ROW LEVEL SECURITY
--- ============================================================================
-
-ALTER TABLE public.profiles         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.provider_orgs    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.insurers         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.doctor_org_links ENABLE ROW LEVEL SECURITY;
-
--- profiles: every user reads/edits their own row.
-CREATE POLICY profiles_select_own ON public.profiles
-  FOR SELECT USING (auth.uid() = id);
-CREATE POLICY profiles_insert_own ON public.profiles
-  FOR INSERT WITH CHECK (auth.uid() = id);
-CREATE POLICY profiles_update_own ON public.profiles
-  FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
-
--- provider_orgs: anyone authenticated can look up by org_code (public-by-design).
-CREATE POLICY provider_orgs_select_all ON public.provider_orgs
-  FOR SELECT USING (auth.role() = 'authenticated');
-CREATE POLICY provider_orgs_insert_authenticated ON public.provider_orgs
-  FOR INSERT WITH CHECK (auth.role() = 'authenticated');
--- Only the owning provider admin can edit their org.
-CREATE POLICY provider_orgs_update_own ON public.provider_orgs
-  FOR UPDATE USING (
-    EXISTS (SELECT 1 FROM public.profiles p
-            WHERE p.id = auth.uid() AND p.provider_org_id = provider_orgs.id
-              AND p.account_type = 'provider')
-  );
-
--- insurers: read-only for everyone (the drop-off portal lists them).
-CREATE POLICY insurers_select_all ON public.insurers
-  FOR SELECT USING (true);
-CREATE POLICY insurers_insert_authenticated ON public.insurers
-  FOR INSERT WITH CHECK (auth.role() = 'authenticated');
-
--- doctor_org_links: doctors manage their own affiliations.
-CREATE POLICY doctor_org_links_select_own ON public.doctor_org_links
-  FOR SELECT USING (auth.uid() = doctor_id
-                 OR EXISTS (SELECT 1 FROM public.profiles p
-                            WHERE p.id = auth.uid()
-                              AND p.provider_org_id = doctor_org_links.provider_org_id));
-CREATE POLICY doctor_org_links_insert_own ON public.doctor_org_links
-  FOR INSERT WITH CHECK (auth.uid() = doctor_id);
-CREATE POLICY doctor_org_links_delete_own ON public.doctor_org_links
-  FOR DELETE USING (auth.uid() = doctor_id
-                 OR EXISTS (SELECT 1 FROM public.profiles p
-                            WHERE p.id = auth.uid()
-                              AND p.provider_org_id = doctor_org_links.provider_org_id));
+CREATE TABLE public.audit_log (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  actor_id uuid,
+  action text NOT NULL,
+  target_id uuid,
+  target_type text,
+  payload_hash text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  chain_seq bigint,
+  prev_hash text,
+  event_hash text,
+  category text,
+  actor_role text,
+  tenant_type text,
+  tenant_id uuid,
+  summary text,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  CONSTRAINT audit_log_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.claim_lines (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  claim_id uuid NOT NULL,
+  cpt_code text NOT NULL,
+  icd10_code text NOT NULL,
+  units integer DEFAULT 1,
+  billed_amount numeric NOT NULL DEFAULT 0,
+  allowed_amount numeric DEFAULT 0,
+  denial_reason text,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  CONSTRAINT claim_lines_pkey PRIMARY KEY (id),
+  CONSTRAINT claim_lines_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES public.claims(id)
+);
+CREATE TABLE public.claims (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  claim_number text UNIQUE,
+  user_id uuid,
+  clinic_id uuid,
+  payer_id uuid,
+  member_id text,
+  patient_name text,
+  patient_id text,
+  provider_name text,
+  payer_name text,
+  date_of_service date NOT NULL,
+  diagnosis_codes ARRAY,
+  procedure_codes ARRAY,
+  total_billed numeric NOT NULL DEFAULT 0,
+  total_allowed numeric DEFAULT 0,
+  currency text DEFAULT 'JOD'::text,
+  status text NOT NULL DEFAULT 'intake_complete'::text,
+  notes text,
+  scrub_result jsonb DEFAULT '{}'::jsonb,
+  scrub_passed boolean DEFAULT false,
+  scrub_warnings integer DEFAULT 0,
+  ai_risk_score integer CHECK (ai_risk_score IS NULL OR ai_risk_score >= 0 AND ai_risk_score <= 100),
+  ai_complexity_score integer CHECK (ai_complexity_score IS NULL OR ai_complexity_score >= 1 AND ai_complexity_score <= 5),
+  ai_recommendation text,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  routing_status text NOT NULL DEFAULT 'routed'::text CHECK (routing_status = ANY (ARRAY['routed'::text, 'unrouted'::text])),
+  payer_name_raw text,
+  fraud_score numeric,
+  fraud_risk_level text CHECK (fraud_risk_level = ANY (ARRAY['low'::text, 'high'::text, 'extreme'::text, 'insufficient_data'::text])),
+  fraud_flags jsonb DEFAULT '[]'::jsonb,
+  fraud_case_id uuid,
+  pre_auth_id uuid,
+  pre_auth_number text,
+  auth_check_status text CHECK (auth_check_status IS NULL OR (auth_check_status = ANY (ARRAY['ok'::text, 'missing'::text, 'expired'::text, 'code_mismatch'::text, 'wrong_patient'::text, 'not_applicable'::text, 'not_approved'::text, 'contradiction'::text]))),
+  auth_check_detail text,
+  retention_until timestamp with time zone DEFAULT (now() + '7 years'::interval),
+  adjudication jsonb,
+  adjudication_decision text,
+  adjudicated_at timestamp with time zone,
+  medical_necessity jsonb,
+  fraud_signal jsonb,
+  CONSTRAINT claims_pkey PRIMARY KEY (id),
+  CONSTRAINT claims_pre_auth_id_fkey FOREIGN KEY (pre_auth_id) REFERENCES public.pre_auth_requests(id),
+  CONSTRAINT claims_fraud_case_fk FOREIGN KEY (fraud_case_id) REFERENCES public.fraud_cases(id),
+  CONSTRAINT claims_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id),
+  CONSTRAINT claims_clinic_id_fkey FOREIGN KEY (clinic_id) REFERENCES public.provider_orgs(id),
+  CONSTRAINT claims_payer_id_fkey FOREIGN KEY (payer_id) REFERENCES public.insurers(id)
+);
+CREATE TABLE public.claims_audit (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  claim_id uuid,
+  user_id uuid,
+  claim_reference_number text,
+  patient_name text,
+  date_of_service date,
+  provider_name text,
+  payer_name text,
+  diagnosis_codes ARRAY,
+  procedure_codes ARRAY,
+  billed_amount numeric,
+  ai_flags jsonb DEFAULT '[]'::jsonb,
+  ai_corrections jsonb DEFAULT '{}'::jsonb,
+  export_count integer DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT claims_audit_pkey PRIMARY KEY (id),
+  CONSTRAINT claims_audit_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES public.claims(id),
+  CONSTRAINT claims_audit_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.doctor_join_requests (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  doctor_id uuid NOT NULL,
+  provider_org_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])),
+  message text,
+  decided_by uuid,
+  decided_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT doctor_join_requests_pkey PRIMARY KEY (id),
+  CONSTRAINT doctor_join_requests_doctor_id_fkey FOREIGN KEY (doctor_id) REFERENCES public.profiles(id),
+  CONSTRAINT doctor_join_requests_provider_org_id_fkey FOREIGN KEY (provider_org_id) REFERENCES public.provider_orgs(id),
+  CONSTRAINT doctor_join_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.doctor_org_links (
+  doctor_id uuid NOT NULL,
+  provider_org_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT doctor_org_links_pkey PRIMARY KEY (doctor_id, provider_org_id),
+  CONSTRAINT doctor_org_links_doctor_id_fkey FOREIGN KEY (doctor_id) REFERENCES public.profiles(id),
+  CONSTRAINT doctor_org_links_provider_org_id_fkey FOREIGN KEY (provider_org_id) REFERENCES public.provider_orgs(id)
+);
+CREATE TABLE public.erasure_requests (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  requested_by uuid,
+  requester_role text,
+  tenant_type text,
+  tenant_id uuid,
+  subject_type text NOT NULL CHECK (subject_type = ANY (ARRAY['claim'::text, 'pre_auth'::text])),
+  subject_id uuid NOT NULL,
+  subject_label text,
+  reason text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'completed'::text, 'rejected'::text])),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  executed_at timestamp with time zone,
+  executed_by uuid,
+  CONSTRAINT erasure_requests_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.fraud_cases (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  claim_id uuid NOT NULL,
+  insurer_id uuid,
+  flag_type text,
+  severity text CHECK (severity = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'critical'::text])),
+  confidence numeric,
+  summary_en text,
+  summary_ar text,
+  key_evidence jsonb DEFAULT '[]'::jsonb,
+  recommended_actions jsonb DEFAULT '[]'::jsonb,
+  fraud_score numeric,
+  anomaly_flags jsonb DEFAULT '[]'::jsonb,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT fraud_cases_pkey PRIMARY KEY (id),
+  CONSTRAINT fraud_cases_claim_id_fkey FOREIGN KEY (claim_id) REFERENCES public.claims(id),
+  CONSTRAINT fraud_cases_insurer_id_fkey FOREIGN KEY (insurer_id) REFERENCES public.insurers(id)
+);
+CREATE TABLE public.insurers (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  name_ar text,
+  country text DEFAULT 'Jordan'::text,
+  cbj_operations_license text UNIQUE,
+  commercial_license_number text UNIQUE,
+  config jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT insurers_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.policy_chunks (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  insurer_id uuid NOT NULL,
+  content text NOT NULL,
+  embedding USER-DEFINED,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT policy_chunks_pkey PRIMARY KEY (id),
+  CONSTRAINT policy_chunks_insurer_id_fkey FOREIGN KEY (insurer_id) REFERENCES public.insurers(id)
+);
+CREATE TABLE public.pre_auth_documents (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  pre_auth_id uuid NOT NULL,
+  file_name text NOT NULL,
+  file_type text NOT NULL,
+  file_base64 text,
+  extracted_text text,
+  created_at timestamp with time zone DEFAULT now(),
+  retention_until timestamp with time zone DEFAULT (now() + '7 years'::interval),
+  CONSTRAINT pre_auth_documents_pkey PRIMARY KEY (id),
+  CONSTRAINT pre_auth_documents_pre_auth_id_fkey FOREIGN KEY (pre_auth_id) REFERENCES public.pre_auth_requests(id)
+);
+CREATE TABLE public.pre_auth_requests (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  insurer_id uuid,
+  reference_number text NOT NULL UNIQUE,
+  provider_name text NOT NULL,
+  patient_name text NOT NULL,
+  patient_id text NOT NULL,
+  patient_age integer,
+  patient_gender text,
+  patient_state text,
+  diagnosis_code text,
+  procedure_code text,
+  provider_specialty text,
+  visit_type text,
+  length_of_stay integer,
+  insurance_type text,
+  claim_amount numeric DEFAULT 0,
+  currency text DEFAULT 'JOD'::text,
+  status text NOT NULL DEFAULT 'processing'::text,
+  sla_deadline timestamp with time zone NOT NULL,
+  assigned_to uuid,
+  days_between_service_and_claim integer,
+  submission_month integer,
+  submission_day_of_week integer,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  routing_status text NOT NULL DEFAULT 'routed'::text CHECK (routing_status = ANY (ARRAY['routed'::text, 'unrouted'::text])),
+  submitted_by uuid,
+  submitter_org uuid,
+  payer_name_raw text,
+  valid_until timestamp with time zone,
+  approved_procedures jsonb DEFAULT '[]'::jsonb,
+  approved_visits integer,
+  approved_los_days integer,
+  issued_at timestamp with time zone,
+  patient_dob date,
+  insurance_member_id text,
+  insurance_group_number text,
+  patient_phone text,
+  patient_address text,
+  ordering_provider_name text,
+  ordering_provider_npi text,
+  ordering_provider_tax_id text,
+  servicing_provider_name text,
+  servicing_provider_npi text,
+  servicing_provider_tax_id text,
+  diagnosis_codes jsonb DEFAULT '[]'::jsonb,
+  procedure_codes jsonb DEFAULT '[]'::jsonb,
+  modifiers text,
+  ndc_code text,
+  place_of_service text,
+  anticipated_date_of_service date,
+  priority text DEFAULT 'Standard'::text CHECK (priority IS NULL OR (priority = ANY (ARRAY['Standard'::text, 'Expedited'::text]))),
+  submitted_role text CHECK (submitted_role IS NULL OR (submitted_role = ANY (ARRAY['doctor'::text, 'provider'::text]))),
+  retention_until timestamp with time zone DEFAULT (now() + '7 years'::interval),
+  CONSTRAINT pre_auth_requests_pkey PRIMARY KEY (id),
+  CONSTRAINT pre_auth_requests_submitted_by_fkey FOREIGN KEY (submitted_by) REFERENCES public.profiles(id),
+  CONSTRAINT pre_auth_requests_submitter_org_fkey FOREIGN KEY (submitter_org) REFERENCES public.provider_orgs(id),
+  CONSTRAINT pre_auth_requests_insurer_id_fkey FOREIGN KEY (insurer_id) REFERENCES public.insurers(id),
+  CONSTRAINT pre_auth_requests_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.profiles (
+  id uuid NOT NULL,
+  account_type text NOT NULL CHECK (account_type = ANY (ARRAY['provider'::text, 'doctor'::text, 'insurance'::text, 'admin'::text])),
+  full_name text,
+  contact_email text,
+  insurer_id uuid,
+  role text,
+  provider_org_id uuid,
+  doctor_specialty text,
+  doctor_license_number text,
+  approved boolean NOT NULL DEFAULT false,
+  config jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT profiles_pkey PRIMARY KEY (id),
+  CONSTRAINT profiles_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id),
+  CONSTRAINT profiles_insurer_id_fkey FOREIGN KEY (insurer_id) REFERENCES public.insurers(id),
+  CONSTRAINT profiles_provider_org_id_fkey FOREIGN KEY (provider_org_id) REFERENCES public.provider_orgs(id)
+);
+CREATE TABLE public.provider_orgs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  name_ar text,
+  org_code text NOT NULL UNIQUE,
+  license_number text UNIQUE,
+  country text DEFAULT 'Jordan'::text,
+  address text,
+  contact_email text,
+  config jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT provider_orgs_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.waitlist_requests (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  email text NOT NULL,
+  password text NOT NULL,
+  account_type text NOT NULL CHECK (account_type = ANY (ARRAY['provider'::text, 'insurance'::text])),
+  details jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])),
+  reviewed_by uuid,
+  reviewed_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT waitlist_requests_pkey PRIMARY KEY (id),
+  CONSTRAINT waitlist_requests_reviewed_by_fkey FOREIGN KEY (reviewed_by) REFERENCES public.profiles(id)
+);

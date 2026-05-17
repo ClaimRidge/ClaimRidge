@@ -5,7 +5,8 @@ import { useRouter, usePathname } from "next/navigation";
 import { ClaimFormData } from "@/types/claim";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
-import { Plus, X, Send, Upload, FileText, Sparkles, CheckCircle, Search, AlertTriangle, Building2, Trash2 } from "lucide-react";
+import Select from "@/components/ui/Select";
+import { Plus, X, Send, Upload, FileText, Sparkles, CheckCircle, Search, AlertTriangle, Building2, Trash2, Info, XCircle, ArrowLeft } from "lucide-react";
 import CodePicker from "@/components/CodePicker";
 import PayerPicker from "@/components/PayerPicker";
 import { ICD10_CODES } from "@/data/icd10";
@@ -132,8 +133,13 @@ export default function ClaimForm() {
     fetchUserAndOrgs();
   }, []);
   
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);       // preview (scrub) in flight
+  const [submitting, setSubmitting] = useState(false); // final submit in flight
   const [error, setError] = useState("");
+
+  // Two-step flow: fill the form → review the AI suggestions → confirm & send.
+  const [step, setStep] = useState<"form" | "review">("form");
+  const [previewResult, setPreviewResult] = useState<any | null>(null);
 
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState("");
@@ -158,7 +164,7 @@ export default function ClaimForm() {
   // Pre-auth linkage state
   const [preAuthNumber, setPreAuthNumber] = useState<string>("");
   const [preAuthLookup, setPreAuthLookup] = useState<{
-    state: "idle" | "loading" | "found" | "not_found" | "expired";
+    state: "idle" | "loading" | "found" | "not_found" | "expired" | "not_approved" | "out_of_network";
     detail?: string;
     patient_name?: string | null;
     patient_id?: string | null;
@@ -170,10 +176,14 @@ export default function ClaimForm() {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Debounced lookup whenever the user types an auth number
+  // Debounced lookup whenever the user types a pre-auth reference
   useEffect(() => {
     const n = preAuthNumber.trim();
     if (!n) { setPreAuthLookup({ state: "idle" }); return; }
+    // Out-of-network payers: ClaimRidge never issued this number, so the
+    // lookup would always 404. Treat the field as informational instead of
+    // showing a misleading "not found — will be denied" warning.
+    if (!registeredPayerUuid) { setPreAuthLookup({ state: "out_of_network" }); return; }
     if (n.length < 10) { setPreAuthLookup({ state: "idle" }); return; }
     setPreAuthLookup({ state: "loading" });
     const ctl = new AbortController();
@@ -186,7 +196,7 @@ export default function ClaimForm() {
           { headers: { Authorization: `Bearer ${session?.access_token}` }, signal: ctl.signal }
         );
         if (res.status === 404) {
-          setPreAuthLookup({ state: "not_found", detail: "No authorization found with that number." });
+          setPreAuthLookup({ state: "not_found", detail: "No pre-authorisation found with that reference." });
           return;
         }
         if (!res.ok) {
@@ -194,11 +204,20 @@ export default function ClaimForm() {
           return;
         }
         const data = await res.json();
+        // A reference can exist but not yet be approved by the insurer — a
+        // claim filed against a pending/denied pre-auth will be flagged.
+        const state = data.expired
+          ? "expired"
+          : data.approved
+            ? "found"
+            : "not_approved";
         setPreAuthLookup({
-          state: data.expired ? "expired" : "found",
+          state,
           detail: data.expired
             ? `Expired on ${new Date(data.valid_until).toLocaleDateString()}.`
-            : `Valid until ${data.valid_until ? new Date(data.valid_until).toLocaleDateString() : "—"}.`,
+            : data.approved
+              ? `Valid until ${data.valid_until ? new Date(data.valid_until).toLocaleDateString() : "—"}.`
+              : `This pre-authorisation has not been approved yet (status: ${data.status || "pending"}).`,
           patient_name: data.patient_name,
           patient_id: data.patient_id,
           valid_until: data.valid_until,
@@ -210,7 +229,7 @@ export default function ClaimForm() {
       }
     }, 400);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [preAuthNumber]);
+  }, [preAuthNumber, registeredPayerUuid]);
 
   const handleProviderSelect = (provider: Provider) => {
     setForm((prev) => ({
@@ -422,61 +441,89 @@ export default function ClaimForm() {
     return `${(b / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Shared request body for both the preview (/scrub) and submit (/submit) calls.
+  const buildPayload = () => {
+    // Fraud-signal fields can be empty strings in the form state; backend
+    // expects nulls / numbers, not blanks.
+    const optNum = (v: unknown) => (v === "" || v === undefined || v === null ? null : Number(v));
+    const optStr = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    return {
+      ...form,
+      payer_name: form.payer_name,
+      // payer_id must be a registered insurer UUID OR empty (= out-of-network,
+      // claim is stored as unrouted).
+      payer_id: registeredPayerUuid || null,
+      member_id: form.payer_id,
+      confidence_scores: extractedScores,
+      clinic_id: selectedClinicId,
+      pre_auth_number: preAuthNumber.trim() || null,
+      patient_age: optNum(form.patient_age),
+      patient_gender: optStr(form.patient_gender),
+      patient_state: optStr(form.patient_state),
+      visit_type: optStr(form.visit_type),
+      length_of_stay: optNum(form.length_of_stay),
+      insurance_type: optStr(form.insurance_type),
+      provider_specialty: optStr(form.provider_specialty),
+    };
+  };
+
+  // Step 1 — run the AI scrub as a PREVIEW. Nothing is saved; the result is
+  // shown for review and the provider can still go back and edit the claim.
+  const handlePreview = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
-
-    const supabase = createClient();
-    const { data: { session } } = await supabase.auth.getSession();
-
     try {
-      // Fraud-signal fields can be empty strings in the form state; backend
-      // expects nulls / numbers, not blanks.
-      const optNum = (v: unknown) => (v === "" || v === undefined || v === null ? null : Number(v));
-      const optStr = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
-
-      const payload = {
-        ...form,
-        payer_name: form.payer_name,
-        // payer_id must be a registered insurer UUID OR empty (= out-of-network,
-        // claim is stored as unrouted).
-        payer_id: registeredPayerUuid || null,
-        member_id: form.payer_id,
-        confidence_scores: extractedScores,
-        clinic_id: selectedClinicId,
-        pre_auth_number: preAuthNumber.trim() || null,
-        // Fraud-detector signals — normalised
-        patient_age: optNum(form.patient_age),
-        patient_gender: optStr(form.patient_gender),
-        patient_state: optStr(form.patient_state),
-        visit_type: optStr(form.visit_type),
-        length_of_stay: optNum(form.length_of_stay),
-        insurance_type: optStr(form.insurance_type),
-        provider_specialty: optStr(form.provider_specialty),
-      };
-
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/scrub`, {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${session?.access_token}`
+          Authorization: `Bearer ${session?.access_token}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload()),
       });
-
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail?.message || data.error || "Failed to scrub claim");
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail?.message || data.detail || data.error || "Failed to scrub claim");
       }
-
-      const data = await res.json();
-      const basePath = pathname.replace('/new', '');
-      router.push(`${basePath}/${data.id}/results`);
+      setPreviewResult(await res.json());
+      setStep("review");
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Step 2 — provider confirmed: persist the claim and route it to the insurer.
+  const handleConfirmSubmit = async () => {
+    setError("");
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/claims/submit`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+        // Send back the previewed scrub verdict so it is persisted as reviewed.
+        body: JSON.stringify({ ...buildPayload(), scrub_result: previewResult }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail?.message || data.detail || data.error || "Failed to submit claim");
+      }
+      const data = await res.json();
+      const basePath = pathname.replace("/new", "");
+      router.push(`${basePath}/${data.id}/results`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+      setSubmitting(false);
     }
   };
 
@@ -496,12 +543,15 @@ export default function ClaimForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-8">
+    <form onSubmit={handlePreview} className="space-y-8">
       {error && (
         <div className="bg-red-50 text-red-600 text-sm rounded-lg p-4 border border-red-200">
           {error}
         </div>
       )}
+
+      {step === "form" && (
+      <>
 
       {/* Billing Organization Dropdown (Only shows if Doctor has joined networks) */}
       {accountType === "doctor" && linkedOrgs.length > 0 && (
@@ -516,25 +566,14 @@ export default function ClaimForm() {
             <label className="block text-sm font-medium text-[#374151] mb-1.5">
               Submitting claim on behalf of:
             </label>
-            <div className="relative">
-              <select
-                value={selectedClinicId}
-                onChange={(e) => setSelectedClinicId(e.target.value)}
-                className="w-full pl-4 pr-10 py-2.5 rounded-xl border border-[#e5e7eb] bg-white text-sm text-[#0a0a0a] focus:outline-none focus:ring-4 focus:ring-[#16a34a]/10 focus:border-[#16a34a] transition-all appearance-none cursor-pointer"
-              >
-                <option value={userId}>Solo Practice (Myself)</option>
-                {linkedOrgs.map((org) => (
-                  <option key={org.id} value={org.id}>
-                    {org.name}
-                  </option>
-                ))}
-              </select>
-              <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                </svg>
-              </div>
-            </div>
+            <Select
+              value={selectedClinicId}
+              onChange={setSelectedClinicId}
+              options={[
+                { value: userId, label: "Solo Practice (Myself)" },
+                ...linkedOrgs.map((org) => ({ value: org.id, label: org.name })),
+              ]}
+            />
             <p className="text-xs text-[#6b7280] mt-2">
               If you select a hospital network, this claim will be visible to their administrative staff.
             </p>
@@ -794,14 +833,14 @@ export default function ClaimForm() {
           Pre-Authorization
         </h3>
         <p className="text-xs text-[#6b7280] mb-4 mt-2">
-          If you obtained a pre-authorization for this service, paste the number below.
+          If you obtained a pre-authorization for this service, paste its reference below.
           We&apos;ll verify the patient, validity window, and approved procedure codes — but only when the payer is in our network. Out-of-network payers can&apos;t be verified, so the field is informational in that case.
         </p>
         <div className="space-y-3">
           <Input
             id="pre_auth_number"
-            label="Authorization Number (optional)"
-            placeholder="AUTH-YYYYMMDD-XXXXXXXX"
+            label="Pre-Auth Reference (optional)"
+            placeholder="PA-…"
             value={preAuthNumber}
             onChange={(e) => setPreAuthNumber(e.target.value.toUpperCase())}
             className="font-mono"
@@ -810,14 +849,14 @@ export default function ClaimForm() {
           {preAuthLookup.state === "loading" && (
             <div className="text-xs text-[#9ca3af] flex items-center gap-2">
               <div className="w-3 h-3 border-2 border-[#16a34a] border-t-transparent rounded-full animate-spin" />
-              Looking up authorization…
+              Looking up pre-authorisation…
             </div>
           )}
 
           {preAuthLookup.state === "found" && (
             <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg p-3 text-xs">
               <div className="flex items-center gap-2 font-bold text-[#15803d] mb-2">
-                <CheckCircle className="h-4 w-4" /> Authorization found
+                <CheckCircle className="h-4 w-4" /> Pre-authorisation verified
               </div>
               <div className="grid grid-cols-2 gap-2 text-[#15803d]">
                 <div><span className="font-bold">Patient:</span> {preAuthLookup.patient_name || "—"}</div>
@@ -835,15 +874,33 @@ export default function ClaimForm() {
             </div>
           )}
 
-          {(preAuthLookup.state === "expired" || preAuthLookup.state === "not_found") && (
+          {(preAuthLookup.state === "expired" || preAuthLookup.state === "not_found" || preAuthLookup.state === "not_approved") && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs flex items-start gap-2 text-amber-800">
               <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="font-bold">
-                  {preAuthLookup.state === "expired" ? "Authorization expired" : "Authorization not found"}
+                  {preAuthLookup.state === "expired"
+                    ? "Pre-authorisation expired"
+                    : preAuthLookup.state === "not_approved"
+                      ? "Pre-authorisation not approved"
+                      : "Pre-authorisation not found"}
                 </p>
                 <p>{preAuthLookup.detail}</p>
                 <p className="mt-1">You can still submit, but the insurer will likely deny this claim for missing or invalid authorization.</p>
+              </div>
+            </div>
+          )}
+
+          {preAuthLookup.state === "out_of_network" && (
+            <div className="bg-[#f0f9ff] border border-[#bae6fd] rounded-lg p-3 text-xs flex items-start gap-2 text-[#0369a1]">
+              <Info className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Stored for reference</p>
+                <p>
+                  This payer isn&apos;t in the ClaimRidge network, so the pre-authorisation
+                  reference can&apos;t be verified here. It&apos;s saved with the claim as
+                  reference metadata and won&apos;t affect the compliance score.
+                </p>
               </div>
             </div>
           )}
@@ -874,16 +931,16 @@ export default function ClaimForm() {
           />
           <div className="space-y-1.5">
             <label htmlFor="patient_gender" className="block text-sm font-medium text-gray-700">Patient Gender</label>
-            <select
+            <Select
               id="patient_gender"
               value={form.patient_gender || ""}
-              onChange={(e) => updateField("patient_gender", e.target.value)}
-              className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a]"
-            >
-              <option value="">— Select —</option>
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-            </select>
+              onChange={(v) => updateField("patient_gender", v)}
+              options={[
+                { value: "", label: "— Select —" },
+                { value: "Male", label: "Male" },
+                { value: "Female", label: "Female" },
+              ]}
+            />
           </div>
           <Input
             id="patient_state"
@@ -896,15 +953,15 @@ export default function ClaimForm() {
           {/* Visit context */}
           <div className="space-y-1.5">
             <label htmlFor="visit_type" className="block text-sm font-medium text-gray-700">Visit Type</label>
-            <select
+            <Select
               id="visit_type"
               value={form.visit_type || ""}
-              onChange={(e) => updateField("visit_type", e.target.value)}
-              className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a]"
-            >
-              <option value="">— Select —</option>
-              {VISIT_TYPES.map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
+              onChange={(v) => updateField("visit_type", v)}
+              options={[
+                { value: "", label: "— Select —" },
+                ...VISIT_TYPES.map((v) => ({ value: v, label: v })),
+              ]}
+            />
           </div>
           {(form.visit_type === "Inpatient" || form.visit_type === "Day Surgery") && (
             <Input
@@ -920,15 +977,15 @@ export default function ClaimForm() {
           )}
           <div className="space-y-1.5">
             <label htmlFor="insurance_type" className="block text-sm font-medium text-gray-700">Insurance Plan Type</label>
-            <select
+            <Select
               id="insurance_type"
               value={form.insurance_type || ""}
-              onChange={(e) => updateField("insurance_type", e.target.value)}
-              className="w-full h-[42px] px-3.5 py-2 bg-white border border-[#e5e7eb] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#16a34a]/10 focus:border-[#16a34a]"
-            >
-              <option value="">— Select —</option>
-              {INSURANCE_TYPES.map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
+              onChange={(v) => updateField("insurance_type", v)}
+              options={[
+                { value: "", label: "— Select —" },
+                ...INSURANCE_TYPES.map((v) => ({ value: v, label: v })),
+              ]}
+            />
           </div>
 
           {/* Provider context */}
@@ -1079,13 +1136,25 @@ export default function ClaimForm() {
         />
       </section>
 
-      {/* Submit */}
+      {/* Review action — runs the scrub as a preview, nothing is saved yet */}
       <div className="flex justify-end pt-4 border-t border-[#e5e7eb]">
         <Button type="submit" loading={loading} size="lg" className="gap-2 w-full sm:w-auto">
-          <Send className="h-4 w-4" />
-          Submit Claim to Insurer
+          <Sparkles className="h-4 w-4" />
+          Review Before Sending
         </Button>
       </div>
+
+      </>
+      )}
+
+      {step === "review" && previewResult && (
+        <ClaimReview
+          result={previewResult}
+          submitting={submitting}
+          onBack={() => { setStep("form"); setError(""); }}
+          onConfirm={handleConfirmSubmit}
+        />
+      )}
 
       <PayerPicker
         isOpen={payerPickerOpen}
@@ -1106,5 +1175,174 @@ export default function ClaimForm() {
         subtitle={codePicker?.type === "procedure_codes" ? "Common procedure codes used in MENA/Jordan clinic billing" : "Common diagnosis codes used in MENA/Jordan clinic billing"}
       />
     </form>
+  );
+}
+
+// ─── Review step ───────────────────────────────────────
+// Shows the AI scrub suggestions before anything is saved. The provider can
+// go back to edit the claim, or confirm — only then is the claim persisted
+// and routed to the insurer.
+function ClaimReview({
+  result,
+  submitting,
+  onBack,
+  onConfirm,
+}: {
+  result: any;
+  submitting: boolean;
+  onBack: () => void;
+  onConfirm: () => void;
+}) {
+  const issues: any[] = result.issues || [];
+  const recommendations: string[] = result.recommendations || [];
+  const score: number = result.overall_score ?? 0;
+  const authCheck = result.auth_check;
+  const errorCount = issues.filter((i) => i.severity === "error").length;
+  const warningCount = issues.filter((i) => i.severity === "warning").length;
+
+  const scoreColor =
+    score >= 80 ? "text-[#16a34a]" : score >= 60 ? "text-amber-500" : "text-red-500";
+  const scoreBg =
+    score >= 80
+      ? "bg-[#f0fdf4] border-[#bbf7d0]"
+      : score >= 60
+      ? "bg-amber-50 border-amber-200"
+      : "bg-red-50 border-red-200";
+
+  return (
+    <div className="space-y-6">
+      {/* Heading */}
+      <div className="flex items-start gap-3">
+        <div className="w-10 h-10 rounded-lg bg-[#f0fdf4] border border-[#bbf7d0] flex items-center justify-center flex-shrink-0">
+          <Sparkles className="h-5 w-5 text-[#16a34a]" />
+        </div>
+        <div>
+          <h3 className="font-display text-lg font-bold text-[#0a0a0a]">Review AI Suggestions</h3>
+          <p className="text-sm text-[#6b7280]">
+            Nothing has been sent yet. Review the scrubber&apos;s findings — go back to fix anything,
+            or confirm to send this claim to the insurer.
+          </p>
+        </div>
+      </div>
+
+      {/* Score + counts */}
+      <div className={`flex items-center gap-4 rounded-xl border p-5 ${scoreBg}`}>
+        <span className={`font-sans text-4xl font-black tabular-nums ${scoreColor}`}>{score}</span>
+        <div className="text-sm">
+          <p className="font-bold text-[#0a0a0a]">Compliance score</p>
+          <p className="text-[#6b7280]">
+            {errorCount > 0 && (
+              <span className="text-red-600 font-medium">
+                {errorCount} error{errorCount !== 1 ? "s" : ""}
+              </span>
+            )}
+            {errorCount > 0 && warningCount > 0 && " · "}
+            {warningCount > 0 && (
+              <span className="text-amber-600 font-medium">
+                {warningCount} warning{warningCount !== 1 ? "s" : ""}
+              </span>
+            )}
+            {issues.length === 0 && (
+              <span className="text-[#16a34a] font-medium">No issues found</span>
+            )}
+          </p>
+        </div>
+      </div>
+
+      {/* Authorisation check */}
+      {authCheck && authCheck.status && authCheck.status !== "not_applicable" && (
+        <div
+          className={`rounded-lg border p-3 text-sm flex items-start gap-2 ${
+            authCheck.status === "ok"
+              ? "bg-[#f0fdf4] border-[#bbf7d0] text-[#15803d]"
+              : "bg-amber-50 border-amber-200 text-amber-800"
+          }`}
+        >
+          {authCheck.status === "ok" ? (
+            <CheckCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+          ) : (
+            <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+          )}
+          <div>
+            <p className="font-bold">
+              {authCheck.status === "ok"
+                ? "Pre-authorisation verified"
+                : "Pre-authorisation issue"}
+            </p>
+            {authCheck.detail && <p className="whitespace-pre-line">{authCheck.detail}</p>}
+          </div>
+        </div>
+      )}
+
+      {/* Issues */}
+      {issues.length > 0 && (
+        <div className="space-y-3">
+          {issues.map((issue, i) => (
+            <div
+              key={i}
+              className={`flex gap-3 p-4 rounded-lg border ${
+                issue.severity === "error"
+                  ? "bg-red-50 border-red-200"
+                  : issue.severity === "warning"
+                  ? "bg-amber-50 border-amber-200"
+                  : "bg-blue-50 border-blue-200"
+              }`}
+            >
+              {issue.severity === "error" ? (
+                <XCircle className="h-5 w-5 text-red-500 flex-shrink-0" />
+              ) : issue.severity === "warning" ? (
+                <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0" />
+              ) : (
+                <Info className="h-5 w-5 text-blue-500 flex-shrink-0" />
+              )}
+              <div>
+                {issue.field && (
+                  <p className="font-medium text-[#0a0a0a] text-sm">{issue.field}</p>
+                )}
+                <p className="text-sm text-[#374151] mt-0.5">{issue.message}</p>
+                {issue.suggestion && (
+                  <p className="text-sm text-[#6b7280] mt-1">
+                    <span className="font-medium text-[#16a34a]">Suggestion:</span> {issue.suggestion}
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Recommendations */}
+      {recommendations.length > 0 && (
+        <div className="bg-white border border-[#e5e7eb] rounded-lg p-4">
+          <h4 className="font-bold text-sm text-[#0a0a0a] mb-2">Recommendations</h4>
+          <ul className="space-y-1.5">
+            {recommendations.map((rec, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-[#374151]">
+                <CheckCircle className="h-4 w-4 text-[#16a34a] flex-shrink-0 mt-0.5" />
+                {rec}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex flex-col-reverse sm:flex-row sm:justify-between gap-3 pt-4 border-t border-[#e5e7eb]">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onBack}
+          disabled={submitting}
+          className="gap-2"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to Edit
+        </Button>
+        <Button type="button" onClick={onConfirm} loading={submitting} size="lg" className="gap-2">
+          <Send className="h-4 w-4" />
+          Confirm &amp; Send to Insurer
+        </Button>
+      </div>
+    </div>
   );
 }

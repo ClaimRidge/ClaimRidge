@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   FilePlus,
   ShieldCheck,
+  ClipboardList,
   History,
   Building2,
   Settings,
@@ -17,6 +18,8 @@ import {
   Menu,
   X,
   ChevronRight,
+  Sparkles,
+  ScrollText,
 } from "lucide-react";
 
 type NavItemDef = {
@@ -26,25 +29,35 @@ type NavItemDef = {
   exact?: boolean;
 };
 
+// Unified sidebar pattern shared by all three portals:
+// Overview → Workflow → Network → Compliance, then pinned Settings/Sign Out.
 const NAV_GROUPS: { label: string; items: NavItemDef[] }[] = [
   {
     label: "Overview",
     items: [
       { href: "/dashboard/doctor", label: "Dashboard", icon: LayoutDashboard, exact: true },
+      { href: "/dashboard/doctor/assistant", label: "Assistant", icon: Sparkles },
     ],
   },
   {
-    label: "Submissions",
+    label: "Workflow",
     items: [
-      { href: "/dashboard/doctor/claims/new", label: "New Claim", icon: FilePlus },
       { href: "/dashboard/doctor/pre-auth/new", label: "New Pre-Auth", icon: ShieldCheck },
+      { href: "/dashboard/doctor/pre-auth", label: "Pre-Auth History", icon: ClipboardList, exact: true },
+      { href: "/dashboard/doctor/claims/new", label: "New Claim", icon: FilePlus },
       { href: "/dashboard/doctor/claims/history", label: "Claim History", icon: History },
     ],
   },
   {
-    label: "Affiliation",
+    label: "Network",
     items: [
       { href: "/dashboard/doctor/organization", label: "My Hospitals", icon: Building2 },
+    ],
+  },
+  {
+    label: "Compliance",
+    items: [
+      { href: "/dashboard/doctor/audit", label: "Compliance & Audit", icon: ScrollText },
     ],
   },
 ];

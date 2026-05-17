@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { InsurerClaim, InsurerClaimStatus, RiskLevel } from "@/types/insurer";
@@ -20,11 +19,15 @@ import {
   ChevronRight,
 } from "lucide-react";
 import Button from "@/components/ui/Button";
+import Select from "@/components/ui/Select";
 
 const STATUS_TABS: { key: "all" | InsurerClaimStatus; label: string }[] = [
   { key: "all", label: "All" },
   { key: "pending", label: "Pending" },
   { key: "under_review", label: "Under Review" },
+  { key: "escalated", label: "Escalated" },
+  { key: "accepted", label: "Accepted" },
+  { key: "denied", label: "Denied" },
   { key: "approved", label: "Approved" },
   { key: "rejected", label: "Rejected" },
   { key: "needs_info", label: "Needs Info" },
@@ -279,23 +282,25 @@ export default function InsurerClaimsPage() {
           </div>
 
           {/* Clinic dropdown */}
-          <select
+          <Select
             value={clinicFilter}
-            onChange={(e) => { setClinicFilter(e.target.value); setPage(0); }}
-            className="px-3 py-1.5 text-sm border border-[#e5e7eb] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#0A1628]"
-          >
-            <option value="all">All Clinics</option>
-            {clinics.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
+            onChange={(v) => { setClinicFilter(v); setPage(0); }}
+            size="sm"
+            fullWidth={false}
+            options={[
+              { value: "all", label: "All Clinics" },
+              ...clinics.map((c) => ({ value: c, label: c })),
+            ]}
+          />
 
           {/* Date range */}
-          <select
+          <Select
             value={dateRange}
-            onChange={(e) => { setDateRange(e.target.value); setPage(0); }}
-            className="px-3 py-1.5 text-sm border border-[#e5e7eb] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#0A1628]"
-          >
-            {DATE_RANGES.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
-          </select>
+            onChange={(v) => { setDateRange(v); setPage(0); }}
+            size="sm"
+            fullWidth={false}
+            options={DATE_RANGES.map((d) => ({ value: d.key, label: d.label }))}
+          />
 
           {/* Search */}
           <div className="relative flex-1 min-w-[200px]">
@@ -398,8 +403,12 @@ export default function InsurerClaimsPage() {
                 </thead>
                 <tbody className="divide-y divide-[#f3f4f6]">
                   {paged.map((c) => (
-                    <tr key={c.id} className="hover:bg-[#f9fafb] transition-colors">
-                      <td className="px-4 py-3">
+                    <tr
+                      key={c.id}
+                      onClick={() => router.push(`/dashboard/insurance/claims/${c.id}`)}
+                      className="hover:bg-[#f9fafb] transition-colors cursor-pointer"
+                    >
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={selected.has(c.id)}
@@ -408,9 +417,9 @@ export default function InsurerClaimsPage() {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <Link href={`/dashboard/insurance/claims/${c.id}`} className="text-sm font-mono font-medium text-[#16a34a] hover:text-[#15803d]">
+                        <span className="text-sm font-mono font-medium text-[#16a34a]">
                           {c.claim_number}
-                        </Link>
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-sm text-[#6b7280]">{c.clinic_name}</td>
                       <td className="px-4 py-3">
@@ -429,23 +438,17 @@ export default function InsurerClaimsPage() {
                       </td>
                       <td className="px-4 py-3"><RiskScoreBadge score={c.ai_risk_score} /></td>
                       <td className="px-4 py-3"><ClaimStatusPill status={c.status} /></td>
-                      <td className="px-4 py-3 relative">
-                        <button
-                          onClick={() => setActionMenuId(actionMenuId === c.id ? null : c.id)}
-                          className="p-1 hover:bg-[#f3f4f6] rounded"
-                        >
-                          <MoreVertical className="h-4 w-4 text-[#9ca3af]" />
-                        </button>
-                        {actionMenuId === c.id && (
-                          <div className="absolute right-4 top-10 z-20 bg-white border border-[#e5e7eb] rounded-lg shadow-lg py-1 w-36">
-                            <Link
-                              href={`/dashboard/insurance/claims/${c.id}`}
-                              className="block px-4 py-2 text-sm text-[#374151] hover:bg-[#f9fafb]"
+                      <td className="px-4 py-3 relative" onClick={(e) => e.stopPropagation()}>
+                        {(c.status === "pending" || c.status === "under_review") && (
+                          <>
+                            <button
+                              onClick={() => setActionMenuId(actionMenuId === c.id ? null : c.id)}
+                              className="p-1 hover:bg-[#f3f4f6] rounded"
                             >
-                              View
-                            </Link>
-                            {(c.status === "pending" || c.status === "under_review") && (
-                              <>
+                              <MoreVertical className="h-4 w-4 text-[#9ca3af]" />
+                            </button>
+                            {actionMenuId === c.id && (
+                              <div className="absolute right-4 top-10 z-20 bg-white border border-[#e5e7eb] rounded-lg shadow-lg py-1 w-36">
                                 <button
                                   onClick={() => handleQuickAction(c.id, "approved")}
                                   className="block w-full text-left px-4 py-2 text-sm text-[#16a34a] hover:bg-[#f9fafb]"
@@ -458,9 +461,9 @@ export default function InsurerClaimsPage() {
                                 >
                                   Reject
                                 </button>
-                              </>
+                              </div>
                             )}
-                          </div>
+                          </>
                         )}
                       </td>
                     </tr>

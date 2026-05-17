@@ -23,6 +23,25 @@ class FraudDetector:
     ]
     MISSING_THRESHOLD = 5
 
+    # Each model feature mapped to the claim field(s) it is built from. Used to
+    # log, per scoring run, which features carried real claim data vs. fell
+    # back to a default value (see _log_feature_usage).
+    FEATURE_SOURCES = [
+        ("Patient_Age", "numeric", ("patient_age",)),
+        ("Patient_Gender", "categorical", ("patient_gender", "gender")),
+        ("Patient_State", "categorical", ("patient_state",)),
+        ("Diagnosis_Code", "categorical", ("diagnosis_code", "diagnosis")),
+        ("Procedure_Code", "categorical", ("procedure_code", "procedure")),
+        ("Length_of_Stay", "numeric", ("length_of_stay",)),
+        ("Visit_Type", "categorical", ("visit_type",)),
+        ("Claim_Amount", "numeric", ("claim_amount", "requested_amount")),
+        ("Insurance_Type", "categorical", ("insurance_type",)),
+        ("Days_Between_Service_and_Claim", "numeric", ("days_between_service_and_claim", "days_between_service")),
+        ("Provider_Specialty", "categorical", ("provider_specialty",)),
+        ("Submission_Month", "numeric", ("submission_month",)),
+        ("Submission_DayOfWeek", "numeric", ("submission_day_of_week",)),
+    ]
+
     def __init__(
         self,
         model_path: str = "models/production_fraud_model.xgb",
@@ -61,9 +80,11 @@ class FraudDetector:
     def _load_feature_names(self):
         full_path = self._resolve(self.feature_names_path)
         if os.path.exists(full_path):
-            names = joblib.load(full_path)
-            logger.info(f"✅ Feature names loaded ({len(names)} features) from {full_path}")
-            return list(names)
+            names = list(joblib.load(full_path))
+            logger.info(
+                f"✅ Fraud model feature names loaded ({len(names)} features): {names}"
+            )
+            return names
         logger.warning(f"⚠️ feature_names.pkl not found at {full_path}; falling back to model.feature_names_in_")
         return list(getattr(self.model, "feature_names_in_", [])) if self.model is not None else []
 
@@ -148,8 +169,31 @@ class FraudDetector:
             return int(encoder.transform([val_str])[0])
         return int(encoder.transform(['Unknown'])[0]) if 'Unknown' in encoder.classes_ else 0
 
+    def _log_feature_usage(self, claim_data: Dict[str, Any]) -> None:
+        """Logs which fraud-model features carried real claim data ('used') for
+        this scoring run, and which fell back to a default value ('unused')."""
+        used, unused = [], []
+        for feature, kind, keys in self.FEATURE_SOURCES:
+            raw = None
+            for key in keys:
+                candidate = claim_data.get(key)
+                if not self._is_missing(candidate, kind):
+                    raw = candidate
+                    break
+            if raw is None:
+                unused.append(feature)
+            else:
+                used.append(f"{feature}={raw}")
+        total = len(self.FEATURE_SOURCES)
+        logger.info(f"🧮 Fraud model — {len(used)}/{total} features USED: {used or ['—']}")
+        logger.info(
+            f"🧮 Fraud model — {len(unused)}/{total} features UNUSED (defaulted): "
+            f"{unused or ['—']}"
+        )
+
     def _extract_features(self, claim_data: Dict[str, Any]) -> pd.DataFrame:
         now = datetime.datetime.now()
+        self._log_feature_usage(claim_data)
 
         def safe_float(key, default=0.0):
             try: return float(claim_data.get(key, default))

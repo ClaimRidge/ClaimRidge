@@ -19,7 +19,7 @@ export default function DashboardRedirect() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("account_type")
+        .select("account_type, approved")
         .eq("id", user.id)
         .maybeSingle();
 
@@ -28,7 +28,14 @@ export default function DashboardRedirect() {
         return;
       }
 
-      if (profile.account_type === "insurance") {
+      if (profile.account_type !== "admin" && !profile.approved) {
+        router.push("/waitlist-pending");
+        return;
+      }
+
+      if (profile.account_type === "admin") {
+        router.push("/dashboard/admin");
+      } else if (profile.account_type === "insurance") {
         router.push("/dashboard/insurance");
       } else if (profile.account_type === "provider") {
         router.push("/dashboard/provider");

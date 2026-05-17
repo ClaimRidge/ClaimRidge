@@ -4,8 +4,25 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
-import { ArrowRight, FileCheck, Brain, BarChart3, Check, ShieldCheck, Lock, Sparkles, Play, X as XIcon, Building2 } from "lucide-react";
-import DemoVideoModal from "@/components/DemoVideoModal";
+import { 
+  ArrowRight, 
+  FileCheck, 
+  Brain, 
+  Check, 
+  ShieldCheck, 
+  Lock, 
+  Sparkles, 
+  Stethoscope,
+  Building,
+  BriefcaseMedical,
+  Activity,
+  FileText,
+  AlertTriangle,
+  Zap,
+  Link as LinkIcon,
+  MessageSquare,
+  History
+} from "lucide-react";
 
 export default function HomePage() {
   const router = useRouter();
@@ -20,14 +37,12 @@ export default function HomePage() {
     };
     checkUser();
   }, [router]);
+
   return (
     <div className="bg-white text-[#0a0a0a]">
       {/* ==================== HERO ==================== */}
       <section className="relative overflow-hidden">
-        {/* Sage → white gradient mesh */}
         <div className="absolute inset-0 hero-mesh pointer-events-none" aria-hidden="true" />
-
-        {/* Large faded shield watermarks */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
           <div className="absolute -top-12 -left-16 opacity-[0.05]" style={{ transform: "rotate(-14deg)" }}>
             <ShieldBg size={360} />
@@ -53,7 +68,7 @@ export default function HomePage() {
                   lineHeight: 1.15,
                 }}
               >
-                Bridging providers and insurers, one clean claim at a time.
+                The compliance layer connecting MENA healthcare.
               </h1>
 
               <p
@@ -65,11 +80,8 @@ export default function HomePage() {
                   fontFamily: "var(--font-playfair), Georgia, serif",
                 }}
               >
-                ClaimRidge is the AI-powered compliance layer that
-                sits between hospitals and insurance companies,
-                validating every claim against payer-specific rules
-                before submission. The result: fewer denials for
-                providers and less manual review for insurers.
+                ClaimRidge brings providers, doctors, and insurers together across pre-authorisation and claims. 
+                Our AI validates medical necessity and payer rules instantly, meaning fewer denials for providers and automated adjudication for insurers.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3">
@@ -77,7 +89,7 @@ export default function HomePage() {
                   href="/signup"
                   className="inline-flex items-center justify-center gap-2 bg-[#16a34a] text-white font-semibold px-6 py-3 rounded-lg transition-all hover:bg-[#15803d] hover:scale-[1.01]"
                 >
-                  Get Started Free
+                  Join the Waitlist
                   <ArrowRight className="h-4 w-4" />
                 </Link>
                 <Link
@@ -88,12 +100,11 @@ export default function HomePage() {
                 </Link>
               </div>
 
-              {/* Demo video placeholder */}
-              <DemoVideoButton />
+
 
               <div className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-[#6b7280]">
-                <span className="flex items-center gap-1.5"><Lock className="h-3.5 w-3.5" /> HIPAA-grade encryption</span>
-                <span className="flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" /> NPHIES-compatible</span>
+                <span className="flex items-center gap-1.5"><Lock className="h-3.5 w-3.5" /> End-to-end encryption</span>
+                <span className="flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" /> PDPL aligned</span>
                 <span className="flex items-center gap-1.5"><Sparkles className="h-3.5 w-3.5" /> MENA payer rules</span>
               </div>
             </div>
@@ -104,59 +115,121 @@ export default function HomePage() {
             </div>
           </div>
         </div>
-
-        {/* Insurance logos marquee 
-        <div className="relative pb-12 md:pb-16">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <p className="text-center text-[10px] tracking-[0.2em] uppercase text-[#9ca3af] mb-5">
-              Integrated with major MENA payers and TPAs
-            </p>
-          </div>
-          <LogoMarquee />
-        </div>*/}
       </section>
 
-      {/* ==================== SOCIAL PROOF ==================== 
-      <section className="py-10 md:py-12 bg-[#f9fafb] border-t border-[#f3f4f6]">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-sm text-[#6b7280] mb-6">
-            Trusted by providers and insurers across Jordan and the GCC
-          </p>
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-6">
-            {[1, 2, 3].map((n) => (
-              <div
-                key={n}
-                className="flex items-center gap-2.5 bg-white border border-[#e5e7eb] rounded-lg px-5 py-3 w-full sm:w-auto"
-              >
-                <Building2 className="h-5 w-5 text-[#d1d5db] flex-shrink-0" />
-                <span className="text-sm text-[#9ca3af] font-medium">Clinic Partner</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>*/}
-
-      {/* ==================== HOW IT WORKS ==================== */}
-      <section className="py-20 md:py-24 border-t border-[#f3f4f6]">
+      {/* ==================== WHO IT'S FOR ==================== */}
+      <section className="py-20 md:py-24 border-t border-[#f3f4f6] bg-[#fafafa]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="max-w-2xl mb-14">
-            <div className="text-xs font-semibold text-[#16a34a] uppercase tracking-wider mb-3">How it works</div>
+          <div className="text-center mb-14">
             <h2
               className="font-serif-display text-[#0a0a0a]"
               style={{ fontSize: "clamp(28px, 3.6vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2 }}
             >
-              Compliance built into the workflow.
+              One platform, three perspectives.
+            </h2>
+          </div>
+          
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="bg-white border border-[#e5e7eb] rounded-xl p-8 shadow-sm">
+              <Building className="h-8 w-8 text-[#16a34a] mb-5" />
+              <h3 className="font-serif-display text-xl font-bold text-[#0a0a0a] mb-3">Providers</h3>
+              <p className="text-[#6b7280] leading-relaxed">
+                Hospitals and clinics manage their clinical staff, oversee billing compliance, and review AI suggestions to ensure claims are clean before submission.
+              </p>
+            </div>
+            <div className="bg-white border border-[#e5e7eb] rounded-xl p-8 shadow-sm">
+              <Stethoscope className="h-8 w-8 text-[#16a34a] mb-5" />
+              <h3 className="font-serif-display text-xl font-bold text-[#0a0a0a] mb-3">Doctors</h3>
+              <p className="text-[#6b7280] leading-relaxed">
+                Clinicians request pre-authorisations with full visibility, getting faster approvals for planned procedures with medical necessity verified instantly.
+              </p>
+            </div>
+            <div className="bg-white border border-[#e5e7eb] rounded-xl p-8 shadow-sm">
+              <BriefcaseMedical className="h-8 w-8 text-[#16a34a] mb-5" />
+              <h3 className="font-serif-display text-xl font-bold text-[#0a0a0a] mb-3">Insurers</h3>
+              <p className="text-[#6b7280] leading-relaxed">
+                Payer medical teams review pre-auths and claims automatically scored for fraud risk and policy compliance, saving countless hours of manual adjudication.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ==================== TWO WORKFLOWS ==================== */}
+      <section className="py-20 md:py-24 border-t border-[#f3f4f6]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="max-w-3xl mb-14">
+            <div className="text-xs font-semibold text-[#16a34a] uppercase tracking-wider mb-3">Unified Workflows</div>
+            <h2
+              className="font-serif-display text-[#0a0a0a]"
+              style={{ fontSize: "clamp(28px, 3.6vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2 }}
+            >
+              The full lifecycle of care.
             </h2>
             <p className="text-[#6b7280] mt-4 text-base md:text-lg">
-              ClaimRidge sits between your billing team and the payer, catching issues before they become denials.
+              From the moment care is planned to the final payment, ClaimRidge connects the dots.
+            </p>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-8">
+            <div className="card-light p-8 md:p-10 border-l-4 border-l-[#16a34a]">
+              <div className="flex items-center gap-4 mb-6">
+                <div className="bg-[#f0faf4] p-3 rounded-lg">
+                  <Activity className="h-6 w-6 text-[#16a34a]" />
+                </div>
+                <h3 className="font-serif-display text-2xl font-bold text-[#0a0a0a]">Pre-authorisation</h3>
+              </div>
+              <p className="text-[#6b7280] mb-6 leading-relaxed">
+                Before care happens, providers request a greenlight. Insurers review medical necessity against their policy. On approval, a time-boxed authorization number is issued, locking in the scope of care.
+              </p>
+              <ul className="space-y-3 text-sm text-[#374151]">
+                <li className="flex items-center gap-2"><Check className="h-4 w-4 text-[#16a34a]" /> Instant payer rules validation</li>
+                <li className="flex items-center gap-2"><Check className="h-4 w-4 text-[#16a34a]" /> Digital clinical document attachments</li>
+                <li className="flex items-center gap-2"><Check className="h-4 w-4 text-[#16a34a]" /> Faster patient care access</li>
+              </ul>
+            </div>
+
+            <div className="card-light p-8 md:p-10 border-l-4 border-l-[#16a34a]">
+              <div className="flex items-center gap-4 mb-6">
+                <div className="bg-[#f0faf4] p-3 rounded-lg">
+                  <FileCheck className="h-6 w-6 text-[#16a34a]" />
+                </div>
+                <h3 className="font-serif-display text-2xl font-bold text-[#0a0a0a]">Claims Processing</h3>
+              </div>
+              <p className="text-[#6b7280] mb-6 leading-relaxed">
+                After care, providers file the bill. If an authorization number exists, it's instantly linked and verified. The AI scrubs for coding compliance, and the insurer adjudicates the final submission.
+              </p>
+              <ul className="space-y-3 text-sm text-[#374151]">
+                <li className="flex items-center gap-2"><Check className="h-4 w-4 text-[#16a34a]" /> Automated CPT & ICD-10 scrubbing</li>
+                <li className="flex items-center gap-2"><Check className="h-4 w-4 text-[#16a34a]" /> Upcoding & bundling detection</li>
+                <li className="flex items-center gap-2"><Check className="h-4 w-4 text-[#16a34a]" /> Seamless pre-auth linkage</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ==================== HOW IT WORKS ==================== */}
+      <section id="how-it-works" className="py-20 md:py-24 border-t border-[#f3f4f6] bg-[#fafafa]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="max-w-2xl mb-14">
+            <div className="text-xs font-semibold text-[#16a34a] uppercase tracking-wider mb-3">The AI Claim Flow</div>
+            <h2
+              className="font-serif-display text-[#0a0a0a]"
+              style={{ fontSize: "clamp(28px, 3.6vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2 }}
+            >
+              Review before you send.
+            </h2>
+            <p className="text-[#6b7280] mt-4 text-base md:text-lg">
+              Catch coding and billing errors internally. Nothing is submitted to the insurer until you confirm it's correct.
             </p>
           </div>
 
           <div className="grid md:grid-cols-3 gap-5">
             {[
-              { icon: FileCheck, step: "01", title: "Submit", description: "Provider uploads or enters claim details (patient, diagnosis, procedure codes, and payer information)." },
-              { icon: Brain, step: "02", title: "Validate", description: "AI checks every field against the specific payer's requirements (coding accuracy, medical necessity, and compliance rules)." },
-              { icon: BarChart3, step: "03", title: "Clear to Send", description: "Compliant claims go through. Flagged claims get actionable fixes (so nothing hits the payer until it's right)." },
+              { icon: FileText, step: "01", title: "Extract & Submit", description: "Drop in clinical documents. The AI auto-fills the form fields with per-field confidence scores." },
+              { icon: Brain, step: "02", title: "Review AI Suggestions", description: "The AI scrubs the claim against payer policy. Review its compliance suggestions and fix any issues before it leaves your system." },
+              { icon: ShieldCheck, step: "03", title: "Confirm & Adjudicate", description: "Confirm and send. The clean claim reaches the insurer, where it is automatically scored and adjudicated for a rapid verdict." },
             ].map((f, i) => (
               <div key={i} className="card-light p-6">
                 <div className="flex items-center gap-3 mb-4">
@@ -173,37 +246,140 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ==================== MENA FOCUS ==================== */}
-      <section className="py-12 md:py-14 border-t border-[#f3f4f6] bg-[#fafafa]">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p
-            className="font-serif-display text-[#374151] leading-relaxed"
-            style={{ fontSize: "clamp(18px, 2.6vw, 24px)", fontWeight: 500, letterSpacing: "-0.01em" }}
-          >
-            The compliance layer built for MENA healthcare, trained on payer rules across Jordan, UAE, Saudi Arabia, and the GCC.
-          </p>
+      {/* ==================== CAPABILITIES ==================== */}
+      <section id="capabilities" className="py-20 md:py-24 border-t border-[#f3f4f6]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-16">
+            <h2
+              className="font-serif-display text-[#0a0a0a]"
+              style={{ fontSize: "clamp(28px, 3.6vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2 }}
+            >
+              Platform Capabilities
+            </h2>
+          </div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-12">
+            {[
+              { icon: Brain, title: "AI Claim Scrubbing", desc: "Checks coding & billing compliance (CPT ↔ ICD-10, NCCI, modifiers, fee schedules) against specific payer rules." },
+              { icon: AlertTriangle, title: "Statistical Fraud Detection", desc: "An advanced ML model scores claims for fraud risk on the insurer side to flag suspicious billing patterns." },
+              { icon: Zap, title: "Automated Adjudication", desc: "Produces accept, deny, or escalate verdicts by combining the coding review, fraud score, and payer policy." },
+              { icon: LinkIcon, title: "Authorization Linkage", desc: "Automatically verifies claims against pre-auth validity windows, patient identity, and approved procedures." },
+              { icon: MessageSquare, title: "AI Assistant", desc: "A read-only assistant in every portal answering questions about claims, pre-auths, and policy with cited sources." },
+              { icon: History, title: "Audit Trail & Compliance", desc: "An append-only, hash-chained event log with PII-access logging and data retention tooling for full accountability." },
+            ].map((cap, i) => (
+              <div key={i} className="flex gap-4">
+                <div className="flex-shrink-0 mt-1">
+                  <div className="w-10 h-10 rounded-lg bg-[#f0faf4] flex items-center justify-center">
+                    <cap.icon className="h-5 w-5 text-[#16a34a]" />
+                  </div>
+                </div>
+                <div>
+                  <h3 className="font-serif-display text-xl font-bold text-[#0a0a0a] mb-2">{cap.title}</h3>
+                  <p className="text-[#6b7280] text-sm leading-relaxed">{cap.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ==================== TRUST & MENA ==================== */}
+      <section className="py-16 md:py-20 border-t border-[#f3f4f6] bg-[#0A1628] text-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid md:grid-cols-2 gap-12 items-center">
+            <div>
+              <h2
+                className="font-serif-display mb-6"
+                style={{ fontSize: "clamp(24px, 3vw, 36px)", fontWeight: 700, letterSpacing: "-0.01em", lineHeight: 1.2 }}
+              >
+                Built for MENA Healthcare
+              </h2>
+              <p className="text-[#9ca3af] text-lg mb-8 leading-relaxed max-w-lg">
+                The compliance layer aligned with regional standards, trained on payer rules across Jordan, UAE, Saudi Arabia, and the GCC.
+              </p>
+              
+              <div className="space-y-5">
+                <div className="flex items-start gap-3">
+                  <Lock className="h-5 w-5 text-[#16a34a] mt-0.5" />
+                  <div>
+                    <h4 className="font-semibold text-white">End-to-end Encryption</h4>
+                    <p className="text-sm text-[#9ca3af] mt-1">Data is encrypted in transit and at rest using industry-standard protocols.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <ShieldCheck className="h-5 w-5 text-[#16a34a] mt-0.5" />
+                  <div>
+                    <h4 className="font-semibold text-white">PDPL Alignment</h4>
+                    <p className="text-sm text-[#9ca3af] mt-1">Designed with data-protection requirements in mind, including retention and erasure tooling.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <History className="h-5 w-5 text-[#16a34a] mt-0.5" />
+                  <div>
+                    <h4 className="font-semibold text-white">Immutable Audit Trail</h4>
+                    <p className="text-sm text-[#9ca3af] mt-1">Hash-chained event logging ensures every action and PII access is recorded permanently.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="relative">
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-8 backdrop-blur-sm">
+                <div className="flex justify-between items-center mb-6 pb-6 border-b border-white/10">
+                   <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-[#16a34a]/20 flex items-center justify-center">
+                         <Lock className="h-5 w-5 text-[#16a34a]" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium">Security Posture</div>
+                        <div className="text-xs text-[#9ca3af]">Continuous monitoring</div>
+                      </div>
+                   </div>
+                   <div className="px-3 py-1 bg-[#16a34a]/20 text-[#16a34a] text-xs font-semibold rounded-full">
+                      Secured
+                   </div>
+                </div>
+                <div className="space-y-4">
+                  {[
+                    { label: "Data Encryption", status: "Active" },
+                    { label: "Audit Hash Chain", status: "Verified" },
+                    { label: "Access Logging", status: "Enforced" }
+                  ].map((item, i) => (
+                    <div key={i} className="flex justify-between items-center">
+                      <span className="text-sm text-[#9ca3af]">{item.label}</span>
+                      <span className="text-sm text-white font-mono flex items-center gap-1.5">
+                        <Check className="h-3.5 w-3.5 text-[#16a34a]" /> {item.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
       {/* ==================== CTA ==================== */}
-      <section className="py-20 md:py-24 border-t border-[#f3f4f6]">
+      <section className="py-20 md:py-24">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <h2
             className="font-serif-display text-[#0a0a0a] mb-4"
             style={{ fontSize: "clamp(28px, 3.6vw, 40px)", fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2 }}
           >
-            Stop losing revenue to preventable denials.
+            Connect the dots in your healthcare workflow.
           </h2>
-          <p className="text-[#6b7280] text-base md:text-lg mb-9 max-w-lg mx-auto">
-            Whether you&apos;re a hospital reducing rejections or an insurer cutting manual review, ClaimRidge makes every claim compliant from day one.
+          <p className="text-[#6b7280] text-base md:text-lg mb-9 max-w-xl mx-auto">
+            Whether you&apos;re a hospital reducing rejections, a doctor speeding up care, or an insurer automating reviews — ClaimRidge brings compliance from day one.
           </p>
-          <Link
-            href="/signup"
-            className="inline-flex items-center gap-2 bg-[#16a34a] text-white font-semibold px-6 py-3 rounded-lg transition-all hover:bg-[#15803d] hover:scale-[1.01]"
-          >
-            Get Started Free
-            <ArrowRight className="h-4 w-4" />
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link
+              href="/signup"
+              className="inline-flex items-center justify-center gap-2 bg-[#16a34a] text-white font-semibold px-8 py-3.5 rounded-lg transition-all hover:bg-[#15803d] hover:scale-[1.01]"
+            >
+              Join the Waitlist
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -217,21 +393,13 @@ function Footer() {
     <footer className="bg-[#f9fafb] border-t border-[#e5e7eb] py-12 md:py-16">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
-          <div className="md:col-span-1">
+          <div className="md:col-span-2">
             <div className="font-display text-xl font-extrabold text-[#0a0a0a] mb-5">
               Claim<span className="text-[#16a34a]">Ridge</span>
             </div>
-            <p className="text-sm text-[#6b7280] leading-relaxed">
-              The AI compliance layer for MENA healthcare. Bridging the gap between providers and insurance.
+            <p className="text-sm text-[#6b7280] leading-relaxed max-w-sm">
+              The AI compliance layer for MENA healthcare. Bridging providers, doctors, and insurers across pre-authorisation and claims.
             </p>
-          </div>
-          <div>
-            <h4 className="text-xs font-bold text-[#0a0a0a] uppercase tracking-wider mb-5">Platform</h4>
-            <ul className="space-y-3 text-sm text-[#6b7280]">
-              <li><Link href="/signup" className="hover:text-[#16a34a] transition-colors">For Providers</Link></li>
-              <li><Link href="/signup" className="hover:text-[#16a34a] transition-colors">For Insurance</Link></li>
-              <li><Link href="/dashboard" className="hover:text-[#16a34a] transition-colors">AI Scrubber</Link></li>
-            </ul>
           </div>
           <div>
             <h4 className="text-xs font-bold text-[#0a0a0a] uppercase tracking-wider mb-5">Company</h4>
@@ -242,10 +410,11 @@ function Footer() {
             </ul>
           </div>
           <div>
-            <h4 className="text-xs font-bold text-[#0a0a0a] uppercase tracking-wider mb-5">Security</h4>
+            <h4 className="text-xs font-bold text-[#0a0a0a] uppercase tracking-wider mb-5">Trust & Security</h4>
             <ul className="space-y-3 text-sm text-[#6b7280]">
-              <li className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-[#16a34a]" /> HIPAA Compliant</li>
-              <li className="flex items-center gap-2"><Lock className="h-4 w-4 text-[#16a34a]" /> 256-bit Encryption</li>
+              <li className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-[#16a34a]" /> PDPL Aligned</li>
+              <li className="flex items-center gap-2"><Lock className="h-4 w-4 text-[#16a34a]" /> End-to-end Encryption</li>
+              <li className="flex items-center gap-2"><History className="h-4 w-4 text-[#16a34a]" /> Immutable Audit Trail</li>
             </ul>
           </div>
         </div>
@@ -263,25 +432,7 @@ function Footer() {
   );
 }
 
-/* ============ Demo Video Button ============ */
 
-function DemoVideoButton() {
-  return (
-    <DemoVideoModal>
-      <button
-        type="button"
-        className="mt-6 group flex items-center gap-3 bg-[#f9fafb] hover:bg-[#f3f4f6] border border-[#e5e7eb] hover:border-[#d1d5db] rounded-xl px-4 py-3 transition-all w-full sm:w-auto"
-      >
-        <span className="flex-shrink-0 w-9 h-9 rounded-full bg-[#16a34a] flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
-          <Play className="h-4 w-4 text-white ml-0.5" />
-        </span>
-        <span className="text-sm font-medium text-[#374151] group-hover:text-[#0a0a0a] transition-colors">
-          Watch a 60-second demo
-        </span>
-      </button>
-    </DemoVideoModal>
-  );
-}
 
 /* ============ Animated Scrubbing Document ============ */
 
@@ -356,96 +507,6 @@ function ScrubbingDocument() {
       </div>
     </div>
   );
-}
-
-/* ============ Insurance Logo Marquee ============ */
-
-function LogoMarquee() {
-  // Varied placeholder "logo" shapes — no real names or brand marks
-  const logos = [
-    { w: 110, shape: "pill" },
-    { w: 95, shape: "block" },
-    { w: 120, shape: "split" },
-    { w: 100, shape: "pill" },
-    { w: 115, shape: "dotted" },
-    { w: 100, shape: "block" },
-    { w: 110, shape: "split" },
-    { w: 105, shape: "pill" },
-  ];
-
-  // Duplicate the list so the marquee can loop seamlessly
-  const track = [...logos, ...logos];
-
-  return (
-    <div className="relative w-full overflow-hidden">
-      {/* Edge fade masks */}
-      <div
-        className="absolute inset-y-0 left-0 w-24 md:w-40 z-10 pointer-events-none"
-        style={{ background: "linear-gradient(to right, #ffffff 10%, rgba(255,255,255,0) 100%)" }}
-        aria-hidden="true"
-      />
-      <div
-        className="absolute inset-y-0 right-0 w-24 md:w-40 z-10 pointer-events-none"
-        style={{ background: "linear-gradient(to left, #ffffff 10%, rgba(255,255,255,0) 100%)" }}
-        aria-hidden="true"
-      />
-
-      <div className="marquee-track flex items-center gap-10 md:gap-14 w-max">
-        {track.map((logo, i) => (
-          <PlaceholderLogo key={i} width={logo.w} shape={logo.shape as PlaceholderShape} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-type PlaceholderShape = "pill" | "block" | "split" | "dotted";
-
-function PlaceholderLogo({ width, shape }: { width: number; shape: PlaceholderShape }) {
-  const commonWrapperStyle: React.CSSProperties = {
-    width,
-    height: 32,
-    filter: "blur(0.5px)",
-    opacity: 0.18,
-  };
-
-  switch (shape) {
-    case "pill":
-      return (
-        <div style={commonWrapperStyle} className="flex items-center gap-2 flex-shrink-0">
-          <div className="w-7 h-7 rounded-full logo-shimmer flex-shrink-0" />
-          <div className="flex-1 h-3.5 rounded-sm logo-shimmer" />
-        </div>
-      );
-    case "block":
-      return (
-        <div style={commonWrapperStyle} className="flex items-center gap-2 flex-shrink-0">
-          <div className="w-8 h-8 rounded-md logo-shimmer flex-shrink-0" />
-          <div className="flex flex-col gap-1 flex-1">
-            <div className="h-2.5 rounded-sm logo-shimmer w-full" />
-            <div className="h-1.5 rounded-sm logo-shimmer w-3/4" />
-          </div>
-        </div>
-      );
-    case "split":
-      return (
-        <div style={commonWrapperStyle} className="flex items-center gap-1.5 flex-shrink-0">
-          <div className="w-5 h-5 rotate-45 logo-shimmer flex-shrink-0" />
-          <div className="flex-1 h-3 rounded-sm logo-shimmer" />
-        </div>
-      );
-    case "dotted":
-      return (
-        <div style={commonWrapperStyle} className="flex items-center gap-2 flex-shrink-0">
-          <div className="flex gap-1 flex-shrink-0">
-            <div className="w-2 h-2 rounded-full logo-shimmer" />
-            <div className="w-2 h-2 rounded-full logo-shimmer" />
-            <div className="w-2 h-2 rounded-full logo-shimmer" />
-          </div>
-          <div className="flex-1 h-3 rounded-sm logo-shimmer" />
-        </div>
-      );
-  }
 }
 
 /* ============ Decorative Shield SVG ============ */

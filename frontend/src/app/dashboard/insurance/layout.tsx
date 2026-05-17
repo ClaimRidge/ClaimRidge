@@ -9,10 +9,10 @@ import ClaimRidgeLogo from "@/components/ClaimRidgeLogo";
 import {
   LayoutDashboard,
   FileSearch,
-  Scale,
+  Sparkles,
   Users,
-  BarChart3,
   ShieldAlert,
+  ScrollText,
   Settings,
   LogOut,
   Menu,
@@ -21,33 +21,34 @@ import {
   Inbox
 } from "lucide-react";
 
+// Unified sidebar pattern shared by all three portals:
+// Overview → Workflow → Network → Compliance, then pinned Settings/Sign Out.
 const NAV_GROUPS = [
   {
     label: "Overview",
     items: [
       { href: "/dashboard/insurance", label: "Dashboard", icon: LayoutDashboard, exact: true },
+      { href: "/dashboard/insurance/assistant", label: "Assistant", icon: Sparkles },
     ],
   },
   {
-    label: "Medical Operations",
+    label: "Workflow",
     items: [
-      { href: "/dashboard/insurance/queue", label: "Pre-Auth Queue", icon: Inbox },
+      { href: "/dashboard/insurance/pre-auth", label: "Pre-Auth Inbox", icon: Inbox },
       { href: "/dashboard/insurance/claims", label: "Claims Inbox", icon: FileSearch },
       { href: "/dashboard/insurance/fraud", label: "Fraud Detection", icon: ShieldAlert },
     ],
   },
   {
-    label: "Knowledge Base",
+    label: "Network",
     items: [
-      { href: "/dashboard/insurance/policies", label: "Medical Policies (RAG)", icon: Scale },
       { href: "/dashboard/insurance/providers", label: "Network Providers", icon: Users },
     ],
   },
   {
-    label: "Intelligence",
+    label: "Compliance",
     items: [
-      { href: "/dashboard/insurance/analytics", label: "Turnaround Analytics", icon: BarChart3 },
-      { href: "/dashboard/insurance/audit", label: "Compliance & Audit", icon: ShieldAlert },
+      { href: "/dashboard/insurance/audit", label: "Compliance & Audit", icon: ScrollText },
     ],
   },
 ];

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { ClaimAuditLog } from "@/types/claim";
 import Button from "@/components/ui/Button";
+import Select from "@/components/ui/Select";
 import {
   ArrowLeft,
   ArrowRight,
@@ -183,28 +184,26 @@ export default function ClaimsHistoryPage() {
               className="w-full pl-9 pr-3 py-2 text-sm bg-[#f9fafb] border border-[#e5e7eb] rounded-lg text-[#0a0a0a] placeholder:text-[#9ca3af] focus:outline-none focus:ring-2 focus:ring-[#16a34a] focus:border-transparent"
             />
           </div>
-          <select
+          <Select
             value={payer}
-            onChange={(e) => setPayer(e.target.value)}
-            className="px-3 py-2 text-sm bg-[#f9fafb] border border-[#e5e7eb] rounded-lg text-[#0a0a0a] focus:outline-none focus:ring-2 focus:ring-[#16a34a] focus:border-transparent"
-          >
-            <option value="all">All payers</option>
-            {payerOptions.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-          <select
+            onChange={setPayer}
+            size="sm"
+            options={[
+              { value: "all", label: "All payers" },
+              ...payerOptions.map((p) => ({ value: p, label: p })),
+            ]}
+          />
+          <Select
             value={status}
-            onChange={(e) => setStatus(e.target.value as StatusFilter)}
-            className="px-3 py-2 text-sm bg-[#f9fafb] border border-[#e5e7eb] rounded-lg text-[#0a0a0a] focus:outline-none focus:ring-2 focus:ring-[#16a34a] focus:border-transparent"
-          >
-            <option value="all">All statuses</option>
-            <option value="clean">Clean</option>
-            <option value="warnings">Warnings</option>
-            <option value="errors">Errors</option>
-          </select>
+            onChange={(v) => setStatus(v as StatusFilter)}
+            size="sm"
+            options={[
+              { value: "all", label: "All statuses" },
+              { value: "clean", label: "Clean" },
+              { value: "warnings", label: "Warnings" },
+              { value: "errors", label: "Errors" },
+            ]}
+          />
           <div className="flex flex-col sm:flex-row gap-2">
             <input
               type="date"

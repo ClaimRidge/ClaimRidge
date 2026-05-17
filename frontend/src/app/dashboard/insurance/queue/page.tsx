@@ -13,10 +13,10 @@ import {
   XCircle,
   FileText,
   Search,
-  Filter,
   ArrowLeft
 } from "lucide-react";
 import Button from "@/components/ui/Button";
+import Select from "@/components/ui/Select";
 
 // --- Types ---
 interface PreAuthRequest {
@@ -28,7 +28,6 @@ interface PreAuthRequest {
   claim_amount: number;
   status: string;
   sla_deadline: string;
-  ai_decision: string | null;
   created_at: string;
 }
 
@@ -66,7 +65,7 @@ export default function FullQueuePage() {
       if (res.ok) {
         const json = await res.json();
         const sortedData = (json.data || []).sort((a: PreAuthRequest, b: PreAuthRequest) => 
-          new Date(a.sla_deadline).getTime() - new Date(b.sla_deadline).getTime()
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
         setQueue(sortedData);
         setFilteredQueue(sortedData);
@@ -143,20 +142,19 @@ export default function FullQueuePage() {
             </div>
             
             <div className="flex gap-2">
-              <div className="relative min-w-[160px]">
-                <Filter className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-[#9ca3af]" />
-                <select 
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 bg-[#f9fafb] border border-[#e5e7eb] rounded-xl text-sm font-bold text-[#0a0a0a] appearance-none focus:outline-none focus:ring-2 focus:ring-[#16a34a]/20 transition-all cursor-pointer"
-                >
-                  <option value="all">All Status</option>
-                  <option value="processing">Processing</option>
-                  <option value="escalated">Needs Review</option>
-                  <option value="approve">Approved</option>
-                  <option value="deny">Denied</option>
-                </select>
-              </div>
+              <Select
+                value={statusFilter}
+                onChange={setStatusFilter}
+                fullWidth={false}
+                className="min-w-[160px] font-bold"
+                options={[
+                  { value: "all", label: "All Status" },
+                  { value: "processing", label: "Processing" },
+                  { value: "pending", label: "Awaiting Review" },
+                  { value: "approved", label: "Approved" },
+                  { value: "denied", label: "Denied" },
+                ]}
+              />
               
               <Button 
                 variant="outline" 
@@ -183,9 +181,9 @@ export default function FullQueuePage() {
               <thead>
                 <tr className="bg-[#fafbfc] text-left border-b border-[#f3f4f6]">
                   <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Reference</th>
+                  <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Submitted</th>
                   <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Patient / Provider</th>
                   <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Deadline</th>
-                  <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">AI Intelligence</th>
                   <th className="px-8 py-5 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.2em]">Current State</th>
                   <th className="px-8 py-5 text-right"></th>
                 </tr>
@@ -197,8 +195,10 @@ export default function FullQueuePage() {
                     <tr key={req.id} className="hover:bg-[#f9fafb] transition-all group border-l-4 border-l-transparent hover:border-l-[#16a34a]">
                       <td className="px-8 py-6 font-mono text-sm text-[#0a0a0a] font-black tracking-tighter">
                         {req.reference_number}
-                        <div className="text-[10px] font-medium text-[#9ca3af] mt-1 font-sans">
-                          Submitted {new Date(req.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-8 py-6">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-[#6b7280]">
+                          {new Date(req.created_at).toLocaleDateString()}
                         </div>
                       </td>
                       <td className="px-8 py-6">
@@ -214,41 +214,13 @@ export default function FullQueuePage() {
                         </span>
                       </td>
                       <td className="px-8 py-6">
-                        <div className="flex flex-col gap-1.5">
-                          {req.ai_decision === "approve" && (
-                            <span className="text-[#16a34a] text-xs font-black uppercase tracking-widest flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-[#16a34a] animate-pulse" />
-                              Approve
-                            </span>
-                          )}
-                          {req.ai_decision === "deny" && (
-                            <span className="text-red-600 text-xs font-black uppercase tracking-widest flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-red-600" />
-                              Deny
-                            </span>
-                          )}
-                          {req.ai_decision === "escalate" && (
-                            <span className="text-amber-600 text-xs font-black uppercase tracking-widest flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-amber-600" />
-                              Escalate
-                            </span>
-                          )}
-                          {!req.ai_decision && (
-                            <span className="text-[#9ca3af] text-xs font-black uppercase tracking-widest flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-gray-300 animate-bounce" />
-                              Analyzing
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-8 py-6">
                         <span className={`inline-flex px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${
-                          req.status === 'escalated' ? 'bg-amber-50 text-amber-600 border-amber-200' : 
-                          req.status === 'approve' ? 'bg-green-50 text-green-600 border-green-200' :
-                          req.status === 'deny' ? 'bg-red-50 text-red-600 border-red-200' :
+                          req.status === 'pending' ? 'bg-amber-50 text-amber-600 border-amber-200' :
+                          req.status === 'approved' ? 'bg-green-50 text-green-600 border-green-200' :
+                          req.status === 'denied' ? 'bg-red-50 text-red-600 border-red-200' :
                           'bg-gray-50 text-gray-500 border-gray-200'
                         }`}>
-                          {req.status}
+                          {req.status === 'pending' ? 'Awaiting Review' : req.status}
                         </span>
                       </td>
                       <td className="px-8 py-6 text-right">

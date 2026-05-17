@@ -21,8 +21,12 @@ import {
   Gavel,
   Download,
   Eye,
+  ShieldCheck,
+  ArrowRight,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "";
 
 function StatCard({
   label,
@@ -128,9 +132,60 @@ const FILTER_TABS: { key: string; label: string }[] = [
   { key: "appealing", label: "Appealing" },
 ];
 
+// ─── Pre-authorisation analytics helpers ───────────────
+interface PreAuthRow {
+  id: string;
+  reference_number: string;
+  patient_name: string;
+  status: string;
+  routing_status: "routed" | "unrouted";
+  insurer_name: string | null;
+  payer_name_raw: string | null;
+  created_at: string;
+  submitted_by_name: string;
+}
+
+type PreAuthBucket = "approved" | "pending" | "escalated" | "denied" | "unrouted";
+
+// Same bucketing the provider pre-auth governance endpoint uses.
+function bucketPreAuth(row: PreAuthRow): PreAuthBucket {
+  if ((row.routing_status || "").toLowerCase() === "unrouted") return "unrouted";
+  const s = (row.status || "").toLowerCase();
+  if (s === "approve" || s === "approved") return "approved";
+  if (s === "escalate" || s === "escalated") return "escalated";
+  if (s === "deny" || s === "denied" || s === "rejected") return "denied";
+  return "pending";
+}
+
+const DECISION_SEGMENTS: { key: PreAuthBucket; label: string; bar: string; dot: string }[] = [
+  { key: "approved", label: "Approved", bar: "bg-[#16a34a]", dot: "bg-[#16a34a]" },
+  { key: "pending", label: "Pending", bar: "bg-amber-400", dot: "bg-amber-400" },
+  { key: "escalated", label: "Escalated", bar: "bg-blue-500", dot: "bg-blue-500" },
+  { key: "denied", label: "Denied", bar: "bg-red-500", dot: "bg-red-500" },
+  { key: "unrouted", label: "Out-of-network", bar: "bg-[#9ca3af]", dot: "bg-[#9ca3af]" },
+];
+
+function PreAuthStatusBadge({ row }: { row: PreAuthRow }) {
+  const map: Record<PreAuthBucket, { label: string; cls: string }> = {
+    approved: { label: "Approved", cls: "bg-[#f0fdf4] text-[#16a34a] border-[#bbf7d0]" },
+    pending: { label: "Pending", cls: "bg-amber-50 text-amber-600 border-amber-200" },
+    escalated: { label: "Escalated", cls: "bg-blue-50 text-blue-600 border-blue-200" },
+    denied: { label: "Denied", cls: "bg-red-50 text-red-600 border-red-200" },
+    unrouted: { label: "Out-of-network", cls: "bg-[#f9fafb] text-[#6b7280] border-[#e5e7eb]" },
+  };
+  const c = map[bucketPreAuth(row)];
+  return (
+    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium border ${c.cls}`}>
+      {c.label}
+    </span>
+  );
+}
+
 export default function DashboardPage() {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [loading, setLoading] = useState(true);
+  const [preAuths, setPreAuths] = useState<PreAuthRow[]>([]);
+  const [preAuthLoading, setPreAuthLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const router = useRouter();
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -164,6 +219,23 @@ export default function DashboardPage() {
         setClaims(data as Claim[]);
       }
       setLoading(false);
+
+      // Pre-authorisations submitted under this provider org (admin + doctors).
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const res = await fetch(`${BACKEND}/api/providers/pre-auths`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
+          if (res.ok) {
+            const pa = await res.json();
+            setPreAuths((pa.submissions || []) as PreAuthRow[]);
+          }
+        }
+      } catch {
+        /* non-critical — section shows its empty state */
+      }
+      setPreAuthLoading(false);
     };
 
     checkUserAndFetchClaims();
@@ -192,6 +264,19 @@ export default function DashboardPage() {
     .filter((c) => ["denied", "rejected"].includes(c.status))
     .reduce((sum, c) => sum + (c.billed_amount || 0), 0);
 
+  // ─── Pre-authorisation analytics ───
+  const paBuckets = preAuths.reduce(
+    (acc, p) => {
+      acc[bucketPreAuth(p)] += 1;
+      return acc;
+    },
+    { approved: 0, pending: 0, escalated: 0, denied: 0, unrouted: 0 }
+  );
+  const paTotal = preAuths.length;
+  const paDecided = paBuckets.approved + paBuckets.denied;
+  const paApprovalRate = paDecided > 0 ? Math.round((paBuckets.approved / paDecided) * 100) : 0;
+  const recentPreAuths = preAuths.slice(0, 6);
+
   const handleDownloadPdf = async (claim: Claim) => {
     setDownloadingId(claim.id);
     try {
@@ -204,15 +289,17 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
+    // flex-col + `order` keeps Pre-Authorisations above Claims, consistent
+    // with the insurer and doctor dashboards.
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 flex flex-col">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
         <div className="flex items-center gap-3">
           <div className="inline-flex items-center justify-center w-10 h-10 bg-[#f0fdf4] border border-[#bbf7d0] rounded-lg">
             <LayoutDashboard className="h-5 w-5 text-[#16a34a]" />
           </div>
           <div>
-            <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0a0a0a]">Claims Dashboard</h1>
-            <p className="text-[#9ca3af] text-sm">Track and manage your claims pipeline</p>
+            <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0a0a0a]">Dashboard</h1>
+            <p className="text-[#9ca3af] text-sm">Track your claims and pre-authorisations</p>
           </div>
         </div>
         <Link href="/dashboard/provider/claims/new">
@@ -222,6 +309,12 @@ export default function DashboardPage() {
           </Button>
         </Link>
       </div>
+
+      {/* ─── Claims (order-2 — renders below Pre-Authorisations) ─────────── */}
+      <div className="order-2 mt-12">
+      <h2 className="font-display text-lg font-bold text-[#0a0a0a] mb-4 flex items-center gap-2">
+        <FileText className="h-4 w-4 text-[#16a34a]" /> Claims
+      </h2>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard label="Total Claims" value={totalClaims} icon={FileText} color="blue" />
@@ -375,6 +468,131 @@ export default function DashboardPage() {
               </tbody>
             </table>
           </div>
+        )}
+      </div>
+      </div>
+
+      {/* ─── Pre-Authorisations (order-1 — renders above Claims) ─────────── */}
+      <div className="order-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <h2 className="font-display text-lg font-bold text-[#0a0a0a] flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-[#16a34a]" /> Pre-Authorisations
+          </h2>
+          <Link
+            href="/dashboard/provider/pre-auth"
+            className="inline-flex items-center gap-1 text-sm font-semibold text-[#16a34a] hover:text-[#15803d]"
+          >
+            View all <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+          <StatCard label="Total Pre-Auths" value={paTotal} icon={ShieldCheck} color="blue" />
+          <StatCard label="Approved" value={paBuckets.approved} icon={CheckCircle} color="green" accent />
+          <StatCard label="Pending" value={paBuckets.pending} icon={Clock} color="amber" accent />
+          <StatCard label="Escalated" value={paBuckets.escalated} icon={AlertTriangle} color="blue" accent />
+          <StatCard label="Denied" value={paBuckets.denied} icon={XCircle} color="red" accent />
+        </div>
+
+        {preAuthLoading ? (
+          <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm p-12 text-center">
+            <div className="animate-spin h-8 w-8 border-4 border-[#16a34a] border-t-transparent rounded-full mx-auto mb-3" />
+            <p className="text-[#9ca3af] text-sm">Loading pre-authorisations...</p>
+          </div>
+        ) : paTotal === 0 ? (
+          <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm p-12 text-center">
+            <ShieldCheck className="h-12 w-12 text-[#d1d5db] mx-auto mb-4" />
+            <h3 className="font-display font-bold text-[#0a0a0a] mb-1">No pre-authorisations yet</h3>
+            <p className="text-[#9ca3af] text-sm mb-4">
+              Pre-auths you and your doctors submit will show up here.
+            </p>
+            <Link href="/dashboard/provider/pre-auth/new">
+              <Button size="sm" className="gap-2">
+                <FilePlus className="h-4 w-4" /> New Pre-Auth
+              </Button>
+            </Link>
+          </div>
+        ) : (
+          <>
+            {/* Decision mix */}
+            <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm p-5 mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-display font-bold text-[#0a0a0a] text-sm">Decision Mix</h3>
+                <span className="text-xs text-[#6b7280]">
+                  Approval rate{" "}
+                  <strong className="text-[#16a34a]">
+                    {paDecided > 0 ? `${paApprovalRate}%` : "--"}
+                  </strong>
+                </span>
+              </div>
+              <div className="flex h-3 rounded-full overflow-hidden bg-[#f3f4f6]">
+                {DECISION_SEGMENTS.map((seg) => {
+                  const count = paBuckets[seg.key];
+                  if (!count) return null;
+                  return (
+                    <div
+                      key={seg.key}
+                      className={seg.bar}
+                      style={{ width: `${(count / paTotal) * 100}%` }}
+                      title={`${seg.label}: ${count}`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3">
+                {DECISION_SEGMENTS.map((seg) => (
+                  <span key={seg.key} className="flex items-center gap-1.5 text-xs text-[#6b7280]">
+                    <span className={`h-2 w-2 rounded-full ${seg.dot}`} />
+                    {seg.label} ({paBuckets[seg.key]})
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Recent pre-auths */}
+            <div className="bg-white border border-[#e5e7eb] rounded-xl shadow-sm overflow-hidden">
+              <div className="px-4 sm:px-6 py-4 border-b border-[#f3f4f6] flex items-center justify-between">
+                <h2 className="font-display font-bold text-[#0a0a0a] text-sm sm:text-base">
+                  Recent Pre-Authorisations
+                </h2>
+                <span className="text-xs text-[#9ca3af]">{recentPreAuths.length} shown</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-[#f9fafb] text-left border-b border-[#f3f4f6]">
+                      <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase tracking-wider">Reference</th>
+                      <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase tracking-wider">Patient</th>
+                      <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase tracking-wider">Doctor</th>
+                      <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase tracking-wider">Insurer</th>
+                      <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase tracking-wider">Status</th>
+                      <th className="px-6 py-3 text-xs font-medium text-[#9ca3af] uppercase tracking-wider">Submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#f3f4f6]">
+                    {recentPreAuths.map((p) => (
+                      <tr key={p.id} className="hover:bg-[#f9fafb] transition-colors">
+                        <td className="px-6 py-4 text-sm font-mono text-[#0a0a0a] font-medium">
+                          {p.reference_number}
+                        </td>
+                        <td className="px-6 py-4 text-sm text-[#374151]">{p.patient_name}</td>
+                        <td className="px-6 py-4 text-sm text-[#6b7280]">{p.submitted_by_name}</td>
+                        <td className="px-6 py-4 text-sm text-[#6b7280]">
+                          {p.insurer_name || p.payer_name_raw || "--"}
+                        </td>
+                        <td className="px-6 py-4">
+                          <PreAuthStatusBadge row={p} />
+                        </td>
+                        <td className="px-6 py-4 text-sm text-[#6b7280]">
+                          {formatDateDMY(p.created_at)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { logPiiAccess } from "@/lib/audit";
 import { Claim, ScrubIssue } from "@/types/claim";
 import Button from "@/components/ui/Button";
 import { generateClaimPdf } from "@/lib/pdf/claimPdf";
@@ -273,6 +274,14 @@ export default function ResultsPage() {
         } else if (data) {
           setClaim(data as Claim);
           setLoading(false);
+          // PDPL: opening a claim exposes patient-identifying data — log it.
+          logPiiAccess({
+            subjectType: "claim",
+            subjectId: claimId,
+            subjectLabel: (data as Claim).claim_number || claimId,
+            purpose: "claim review",
+            fields: ["patient_name", "patient_id", "diagnosis_codes", "procedure_codes"],
+          });
           return;
         }
         await new Promise((r) => setTimeout(r, 400));

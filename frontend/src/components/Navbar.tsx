@@ -130,8 +130,20 @@ export default function Navbar() {
             ) : !loading ? (
               <>
                 <Link
-                  href="/login"
+                  href="/#how-it-works"
                   className="text-sm font-medium text-[#374151] hover:text-[#0a0a0a] transition-colors"
+                >
+                  How it Works
+                </Link>
+                <Link
+                  href="/#capabilities"
+                  className="text-sm font-medium text-[#374151] hover:text-[#0a0a0a] transition-colors"
+                >
+                  Capabilities
+                </Link>
+                <Link
+                  href="/login"
+                  className="inline-flex items-center justify-center bg-white border border-[#16a34a] text-[#16a34a] hover:bg-[#f0faf4] font-semibold text-sm px-4 py-2 rounded-lg transition-colors"
                 >
                   Log In
                 </Link>
@@ -139,7 +151,7 @@ export default function Navbar() {
                   href="/signup"
                   className="inline-flex items-center justify-center bg-[#16a34a] text-white font-semibold text-sm px-4 py-2 rounded-lg hover:bg-[#15803d] transition-colors"
                 >
-                  Get Started
+                  Join Waitlist
                 </Link>
               </>
             ) : null}
@@ -218,9 +230,23 @@ export default function Navbar() {
           ) : !loading ? (
             <>
               <Link
-                href="/login"
+                href="/#how-it-works"
                 onClick={() => setMobileOpen(false)}
                 className="block py-2 text-[#374151] hover:text-[#0a0a0a]"
+              >
+                How it Works
+              </Link>
+              <Link
+                href="/#capabilities"
+                onClick={() => setMobileOpen(false)}
+                className="block py-2 text-[#374151] hover:text-[#0a0a0a]"
+              >
+                Capabilities
+              </Link>
+              <Link
+                href="/login"
+                onClick={() => setMobileOpen(false)}
+                className="block text-center bg-white border border-[#16a34a] text-[#16a34a] hover:bg-[#f0faf4] font-semibold px-4 py-2.5 rounded-lg transition-colors"
               >
                 Log In
               </Link>
@@ -229,7 +255,7 @@ export default function Navbar() {
                 onClick={() => setMobileOpen(false)}
                 className="block text-center bg-[#16a34a] text-white font-semibold px-4 py-2.5 rounded-lg hover:bg-[#15803d]"
               >
-                Get Started
+                Join Waitlist
               </Link>
             </>
           ) : null}

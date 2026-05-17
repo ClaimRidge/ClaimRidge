@@ -18,7 +18,9 @@ import {
   X,
   ChevronRight,
   ShieldCheck,
-  Inbox,
+  ClipboardList,
+  Sparkles,
+  ScrollText,
 } from "lucide-react";
 
 type NavItemDef = {
@@ -29,26 +31,36 @@ type NavItemDef = {
   external?: boolean;
 };
 
+// Unified sidebar pattern shared by all three portals:
+// Overview → Workflow → Network → Compliance, then pinned Settings/Sign Out.
 const NAV_GROUPS: { label: string; items: NavItemDef[] }[] = [
   {
-    label: "Operations",
+    label: "Overview",
     items: [
       { href: "/dashboard/provider", label: "Dashboard", icon: LayoutDashboard, exact: true },
-      { href: "/dashboard/provider/pipeline", label: "Pipelines", icon: Columns3 },
-      { href: "/dashboard/provider/claims/history", label: "Claim History", icon: History },
+      { href: "/dashboard/provider/assistant", label: "Assistant", icon: Sparkles },
     ],
   },
   {
-    label: "Actions",
+    label: "Workflow",
     items: [
+      { href: "/dashboard/provider/pre-auth/new", label: "New Pre-Auth", icon: ShieldCheck },
+      { href: "/dashboard/provider/pre-auth", label: "Pre-Auth History", icon: ClipboardList, exact: true },
       { href: "/dashboard/provider/claims/new", label: "New Claim", icon: FilePlus },
-      { href: "/drop-off", label: "Pre-Auth Drop-Off", icon: Inbox, external: true },
+      { href: "/dashboard/provider/claims/history", label: "Claim History", icon: History },
+      { href: "/dashboard/provider/pipeline", label: "Pipelines", icon: Columns3 },
     ],
   },
   {
     label: "Network",
     items: [
       { href: "/dashboard/provider/staff", label: "Organization", icon: Users },
+    ],
+  },
+  {
+    label: "Compliance",
+    items: [
+      { href: "/dashboard/provider/audit", label: "Compliance & Audit", icon: ScrollText },
     ],
   },
 ];

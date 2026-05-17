@@ -1,7 +1,7 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import user, insurer, pre_auth, dropoff, fraud, claims, intake, providers, doctors, policy_chat
+from routers import user, insurer, pre_auth, dropoff, fraud, claims, intake, providers, doctors, assistant, audit
 from core.config import logger
 
 app = FastAPI(title="ClaimRidge Enterprise API")
@@ -28,8 +28,11 @@ app.include_router(claims.router)
 app.include_router(providers.router)
 app.include_router(doctors.router)
 
-# Policy RAG chatbot (insurer-side)
-app.include_router(policy_chat.router)
+# Assistant — read-only, tool-using agent (all portals)
+app.include_router(assistant.router)
+
+# Audit Trail & Compliance (all portals)
+app.include_router(audit.router)
 
 app.include_router(user.router)
 

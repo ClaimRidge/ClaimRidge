@@ -42,7 +42,6 @@ interface PreAuthRow {
   patient_name: string;
   status: string;
   routing_status: "routed" | "unrouted";
-  ai_decision: string | null;
   insurer_name: string | null;
   payer_name_raw: string | null;
   insurer_id: string | null;
@@ -136,11 +135,14 @@ export default function DoctorDashboard() {
 
   const paKpis = useMemo(() => {
     const today = new Date();
-    const approved = preAuths.filter(p => p.ai_decision === "approve").length;
-    const escalated = preAuths.filter(p => p.ai_decision === "escalate" || p.status === "escalated").length;
+    const approved = preAuths.filter(p => ["approve", "approved"].includes((p.status || "").toLowerCase())).length;
+    const pending = preAuths.filter(p =>
+      p.routing_status === "routed" &&
+      !["approve", "approved", "deny", "denied", "rejected"].includes((p.status || "").toLowerCase())
+    ).length;
     const todayCount = preAuths.filter(p => isSameDay(new Date(p.created_at), today)).length;
     const unrouted = preAuths.filter(p => p.routing_status === "unrouted").length;
-    return { total: preAuths.length, approved, escalated, todayCount, unrouted };
+    return { total: preAuths.length, approved, pending, todayCount, unrouted };
   }, [preAuths]);
 
   // ─── 7-day submissions sparkline data ─────────────────
@@ -196,6 +198,47 @@ export default function DoctorDashboard() {
       {/* ── Affiliation banner ── */}
       <AffiliationBanner affiliations={affiliations} pending={pendingRequests} />
 
+      {/* ── Pre-auth section ── */}
+      <SectionHeader title="My Pre-Authorisations" subtitle="Clinical submissions awaiting insurer review." icon={ShieldCheck} />
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <Kpi label="Total Submitted" value={paKpis.total} icon={ShieldCheck} color="blue" />
+        <Kpi label="Approved" value={paKpis.approved} icon={CheckCircle} color="green" />
+        <Kpi label="Awaiting Review" value={paKpis.pending} icon={Clock} color="amber" description="Pending insurer decision" />
+        <Kpi label="Out-of-Network" value={paKpis.unrouted} icon={AlertCircle} color="red" description="Manual follow-up" />
+      </div>
+
+      <Card
+        title="Recent Pre-Auths"
+        linkHref="/dashboard/doctor/pre-auth"
+        linkLabel="See all"
+      >
+        {recentPreAuths.length === 0 ? (
+          <Empty icon={ShieldCheck} title="No pre-auths yet" subtitle="Submit one from the sidebar to start the clinical review." />
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="bg-[#fafbfc] text-left border-b border-[#f3f4f6]">
+                <Th>Reference</Th><Th>Patient</Th><Th>Insurer</Th><Th>Status</Th><th />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#f3f4f6]">
+              {recentPreAuths.map(p => (
+                <tr key={p.id} className="hover:bg-[#fcfdfc] transition-colors">
+                  <td className="px-6 py-3.5 text-sm font-mono text-[#0a0a0a]">{p.reference_number}</td>
+                  <td className="px-6 py-3.5 text-sm font-bold text-[#0a0a0a]">{p.patient_name}</td>
+                  <td className="px-6 py-3.5 text-sm text-[#6b7280]">{p.insurer_name || p.payer_name_raw || "—"}</td>
+                  <td className="px-6 py-3.5"><StatusChip status={p.status} routing={p.routing_status} /></td>
+                  <td className="px-6 py-3.5 text-right">
+                    <span className="text-[10px] text-[#9ca3af]">{new Date(p.created_at).toLocaleDateString()}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
       {/* ── Claims section ── */}
       <SectionHeader title="My Claims" subtitle="Provider-billed claims you've submitted." icon={FileText} />
 
@@ -232,48 +275,6 @@ export default function DoctorDashboard() {
                   <td className="px-6 py-3.5"><StatusChip status={c.status} routing={c.routing_status} /></td>
                   <td className="px-6 py-3.5 text-right">
                     <Link href={`/dashboard/doctor/claims/${c.id}/results`} className="text-xs font-bold text-[#16a34a] hover:underline">View</Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-
-      {/* ── Pre-auth section ── */}
-      <SectionHeader title="My Pre-Authorisations" subtitle="Clinical submissions awaiting insurer review." icon={ShieldCheck} />
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <Kpi label="Total Submitted" value={paKpis.total} icon={ShieldCheck} color="blue" />
-        <Kpi label="Approved" value={paKpis.approved} icon={CheckCircle} color="green" />
-        <Kpi label="Needs Review" value={paKpis.escalated} icon={Clock} color="amber" description="Escalated to insurer" />
-        <Kpi label="Out-of-Network" value={paKpis.unrouted} icon={AlertCircle} color="red" description="Manual follow-up" />
-      </div>
-
-      <Card
-        title="Recent Pre-Auths"
-        linkHref="/dashboard/doctor/pre-auth"
-        linkLabel="See all"
-      >
-        {recentPreAuths.length === 0 ? (
-          <Empty icon={ShieldCheck} title="No pre-auths yet" subtitle="Submit one from the sidebar to start the clinical review." />
-        ) : (
-          <table className="w-full">
-            <thead>
-              <tr className="bg-[#fafbfc] text-left border-b border-[#f3f4f6]">
-                <Th>Reference</Th><Th>Patient</Th><Th>Insurer</Th><Th>AI Decision</Th><Th>Status</Th><th />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f3f4f6]">
-              {recentPreAuths.map(p => (
-                <tr key={p.id} className="hover:bg-[#fcfdfc] transition-colors">
-                  <td className="px-6 py-3.5 text-sm font-mono text-[#0a0a0a]">{p.reference_number}</td>
-                  <td className="px-6 py-3.5 text-sm font-bold text-[#0a0a0a]">{p.patient_name}</td>
-                  <td className="px-6 py-3.5 text-sm text-[#6b7280]">{p.insurer_name || p.payer_name_raw || "—"}</td>
-                  <td className="px-6 py-3.5"><DecisionChip d={p.ai_decision} routing={p.routing_status} /></td>
-                  <td className="px-6 py-3.5"><StatusChip status={p.status} routing={p.routing_status} /></td>
-                  <td className="px-6 py-3.5 text-right">
-                    <span className="text-[10px] text-[#9ca3af]">{new Date(p.created_at).toLocaleDateString()}</span>
                   </td>
                 </tr>
               ))}
@@ -429,17 +430,6 @@ function Card({ title, linkHref, linkLabel, children }: {
 
 function Th({ children }: { children: React.ReactNode }) {
   return <th className="px-6 py-3 text-[10px] font-black text-[#9ca3af] uppercase tracking-[0.15em]">{children}</th>;
-}
-
-function DecisionChip({ d, routing }: { d: string | null; routing: string }) {
-  if (routing === "unrouted") return <span className="text-[10px] text-[#9ca3af] font-bold uppercase">N/A</span>;
-  if (!d) return <span className="text-[10px] text-[#6b7280] uppercase font-bold flex items-center gap-1"><Clock className="h-3 w-3" /> Pending</span>;
-  const cls =
-    d === "approve" ? "bg-green-50 text-green-700" :
-    d === "escalate" ? "bg-amber-50 text-amber-700" :
-    d === "deny" ? "bg-red-50 text-red-700" :
-    "bg-gray-100 text-gray-600";
-  return <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${cls}`}>{d}</span>;
 }
 
 function Empty({ icon: Icon, title, subtitle }: { icon: React.ElementType; title: string; subtitle: string }) {
